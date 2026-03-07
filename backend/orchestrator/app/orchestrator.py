@@ -34,6 +34,7 @@ import os
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -228,43 +229,6 @@ def _call_web(url: str, pass_number: int) -> dict[str, Any]:
     return web_adapter.adapt(aggregated, pass_number, url)
 
 
-# ── Input extraction for next pass ────────────────────────────────────────────
-
-def _extract_next_input(last_finding: dict[str, Any], next_tool: str) -> str | None:
-    """
-    Extract the relevant input value for the next analyzer from the last finding.
-    E.g. if steg found an embedded EXE → return that path for malware analyzer.
-    """
-    raw = last_finding.get("raw_output", "")
-    findings = last_finding.get("findings", [])
-
-    if next_tool in ("malware", "steg"):
-        # Look for extracted file paths
-        extracted = last_finding.get("extracted_files", [])
-        if extracted:
-            return extracted[0]
-        for f in findings:
-            path = f.get("extracted_path")
-            if path:
-                return path
-
-    if next_tool == "web":
-        urls = re.findall(r'https?://[^\s"\'<>]+', raw)
-        if urls:
-            return urls[0]
-
-    if next_tool == "recon":
-        ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', raw)
-        if ips:
-            return ips[0]
-        domains = re.findall(r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b', raw)
-        if domains:
-            return domains[0]
-
-    # Default: reuse the last analyzer's original input
-    return last_finding.get("input")
-
-
 # ── Main pipeline loop ─────────────────────────────────────────────────────────
 
 _CALLER_MAP = {
@@ -273,6 +237,42 @@ _CALLER_MAP = {
     "recon":   _call_recon,
     "web":     _call_web,
 }
+
+
+def _normalize_target(tool: str, target: str) -> str | None:
+    """
+    Last-mile normalization before passing target to an analyzer.
+    - recon: must be a bare IP or hostname (no scheme, no path)
+    - web:   must be a full URL with http(s):// scheme
+    Returns None if the target cannot be made valid.
+    """
+    target = target.strip().rstrip("/")
+    if not target:
+        return None
+
+    if tool == "recon":
+        try:
+            host = urlparse(target if "://" in target else f"https://{target}").hostname or ""
+        except Exception:
+            host = ""
+        if not host or host.startswith(".") or "." not in host:
+            log.warning(f"[pipeline] Cannot normalize recon target: {target!r}")
+            return None
+        return host
+
+    if tool == "web":
+        if not target.startswith(("http://", "https://")):
+            target = f"https://{target}"
+        try:
+            host = urlparse(target).hostname or ""
+        except Exception:
+            host = ""
+        if not host or host.startswith(".") or "." not in host:
+            log.warning(f"[pipeline] Cannot normalize web target: {target!r}")
+            return None
+        return target
+
+    return target
 
 
 def run_pipeline(user_input: str, max_passes: int = 3) -> FindingsStore:
@@ -307,7 +307,7 @@ def run_pipeline(user_input: str, max_passes: int = 3) -> FindingsStore:
                 f"file head:\n{file_head}"
             ),
         }
-        decision = decide_next(synthetic, pass_number=0, max_passes=max_passes)
+        decision = decide_next(synthetic, pass_number=0, max_passes=max_passes, tools_run=[])
         first_analyzer = decision["next_tool"]
         log.info(f"[pipeline] AI chose first analyzer: {first_analyzer} — {decision['reasoning']}")
 
@@ -319,7 +319,18 @@ def run_pipeline(user_input: str, max_passes: int = 3) -> FindingsStore:
     current_tool  = first_analyzer
     current_input = user_input
 
+    # Track executed (tool, target) pairs to avoid infinite loops
+    tools_run: list[str] = []
+    visited: set[tuple[str, str]] = set()
+
     for pass_num in range(1, max_passes + 1):
+        # Deduplicate — never re-run the exact same (tool, input) pair
+        visit_key = (current_tool, str(current_input))
+        if visit_key in visited:
+            log.warning(f"[pipeline] Skipping duplicate ({current_tool}, {current_input!r})")
+            break
+        visited.add(visit_key)
+
         log.info(f"[pipeline] Pass {pass_num}/{max_passes} — {current_tool} on {current_input!r}")
 
         caller_fn = _CALLER_MAP.get(current_tool)
@@ -341,6 +352,7 @@ def run_pipeline(user_input: str, max_passes: int = 3) -> FindingsStore:
             }
 
         store.append(result)
+        tools_run.append(current_tool)
         log.info(
             f"[pipeline] Pass {pass_num} done — "
             f"{len(result['findings'])} findings, risk_score={result['risk_score']}"
@@ -351,16 +363,30 @@ def run_pipeline(user_input: str, max_passes: int = 3) -> FindingsStore:
             break
 
         # ── AI routing decision ────────────────────────────────────────────────
-        decision = decide_next(result, pass_number=pass_num, max_passes=max_passes)
-        log.info(f"[pipeline] AI decision: next={decision['next_tool']!r} — {decision['reasoning']}")
+        decision = decide_next(
+            result,
+            pass_number=pass_num,
+            max_passes=max_passes,
+            tools_run=tools_run,
+        )
+        log.info(
+            f"[pipeline] AI decision: next={decision['next_tool']!r} "
+            f"target={decision['target']!r} — {decision['reasoning']}"
+        )
 
         if not decision["next_tool"]:
             log.info("[pipeline] AI signalled termination — ending loop early")
             break
 
-        next_input = _extract_next_input(result, decision["next_tool"])
+        next_input = decision.get("target")
         if not next_input:
-            log.warning("[pipeline] Cannot extract input for next analyzer — stopping")
+            log.warning("[pipeline] AI provided no target — stopping")
+            break
+
+        # Normalize target for the specific tool (safety net after AI validation)
+        next_input = _normalize_target(decision["next_tool"], next_input)
+        if not next_input:
+            log.warning(f"[pipeline] Target normalization failed for tool={decision['next_tool']!r} — stopping")
             break
 
         current_tool  = decision["next_tool"]
