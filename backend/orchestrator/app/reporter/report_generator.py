@@ -61,7 +61,7 @@ _SEV_COLORS: dict[str, tuple[str, str]] = {
 
 _ANALYZER_ICONS: dict[str, str] = {
     "malware": "🦠", "steg": "🖼️", "recon": "🔍",
-    "web": "🌐", "url": "🔗", "classifier": "🗂️",
+    "web": "🌐", "url": "🔗", "classifier": "🗂️", "macro": "📄",
 }
 
 _ANALYZER_LABELS: dict[str, str] = {
@@ -70,6 +70,7 @@ _ANALYZER_LABELS: dict[str, str] = {
     "recon":   "Reconnaissance",
     "web":     "Web Vulnerability Analysis",
     "url":     "URL Analysis",
+    "macro":   "Macro / Document Analysis",
 }
 
 
@@ -155,12 +156,52 @@ def _render_evidence(finding: dict) -> str:
     if ftype == "disassembly":
         return _ev_code_block(ev, "Assembly / objdump -d", "asm")
 
+    # VBA macro source code → collapsible code block with VBA highlighting hint
+    if ftype == "macro_source":
+        return _ev_code_block(ev, "VBA Macro Source Code", "vba")
+
+    # XLM / Excel 4 macro deobfuscation output
+    if ftype == "macro_xlm":
+        return _ev_code_block(ev, "Excel 4 (XLM) Macros", "")
+
     # Generic JSON object → key-value table
     if ev.startswith("{"):
         try:
             data = json.loads(ev)
             if isinstance(data, dict):
                 return _ev_kv_table(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # JSON array of strings (IOC list) → inline chips
+    if ev.startswith("["):
+        try:
+            items = json.loads(ev)
+            if isinstance(items, list) and all(isinstance(i, str) for i in items):
+                chips = " ".join(
+                    f'<code class="ev-chip">{he(i)}</code>' for i in items[:30]
+                )
+                overflow = (
+                    f' <span class="ev-meta">(+{len(items)-30} more)</span>'
+                    if len(items) > 30 else ""
+                )
+                return f'<div>{chips}{overflow}</div>'
+            # JSON array of objects (indicator items) → key-value table for first item
+            # and a count badge for the rest
+            if isinstance(items, list) and all(isinstance(i, dict) for i in items):
+                rows = ""
+                for item in items[:15]:
+                    for k, v in item.items():
+                        rows += (
+                            f'<tr><td class="ev-k">{he(str(k))}</td>'
+                            f'<td class="ev-v">{he(str(v))}</td></tr>'
+                        )
+                    rows += '<tr><td colspan="2" style="border-top:2px solid #e2e8f0"></td></tr>'
+                overflow_badge = (
+                    f'<div class="ev-meta" style="margin-top:.3rem">(+{len(items)-15} more items)</div>'
+                    if len(items) > 15 else ""
+                )
+                return f'<table class="ev-table"><tbody>{rows}</tbody></table>{overflow_badge}'
         except (json.JSONDecodeError, ValueError):
             pass
 
