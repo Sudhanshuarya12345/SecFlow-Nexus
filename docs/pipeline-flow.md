@@ -7,16 +7,265 @@ This document describes the precise logic of the SecFlow analysis pipeline from 
 ## Pipeline Entry Point
 
 The user submits one of:
-- A **file** (any format: PNG, JPG, EXE, PDF, ZIP, TXT, etc.)
+- A **file** (any format: Office doc, PNG, EXE, ZIP, RTF, …)
 - A **URL** string
 - An **IP address** string
 - A **domain** string
 
-The user also specifies (or defaults to) a **max passes** value: `3`, `4`, or `5`.
+Together with an optional `passes` query param (default `3`, max `5`).
 
 ---
 
-## Stage 1 — Input Classification (Pass 1 Only)
+## Stage 1 — Input Classification (Pass 1 Only, No AI by default)
+
+```
+User Input
+    │
+    ▼
+┌─────────────────────────────────────────────┐
+│  python-magic + file command                 │
+│  Produce: MIME type + magic string           │
+└─────────────┬───────────────────────────────┘
+             │
+    ┌───────┴───────┐
+    │ Deterministic │
+    │ Rule Match?   │
+    └───────┬───────┘
+             │
+    ┌───────┴──────────────┐
+   Yes                      No (unknown type)
+    │                        │
+    ▼                        ▼
+ Route to first           AI Fallback (Groq):
+ analyzer by rule         Pass magic output +
+ (see table below)        head-100 of file →
+                          returns first_tool
+```
+
+### Routing Rules (Deterministic, First Match Wins)
+
+| Priority | Condition | First Analyzer |
+|---|---|---|
+| 1 | MIME `image/*` or magic contains PNG/JPEG/GIF/BMP/TIFF/WEBP | **steg** |
+| 2 | MIME is any MS Office / OLE2 / OpenXML / RTF type, or magic contains “Composite Document File V2”, “Microsoft Office”, “Office Open XML”, “Rich Text Format”; or ZIP with .docx/.xlsx/.pptx extension | **macro** |
+| 3 | MIME `application/x-dosexec`, `x-elf`, `x-executable` etc. AND magic confirms PE32/ELF/Mach-O | **malware** |
+| 4 | Raw input string matches `^https?://` | **web** |
+| 5 | Raw input string matches IPv4 regex | **recon** |
+| 6 | Raw input string matches domain regex | **recon** |
+| 7 | None of the above | AI fallback (Groq) |
+
+---
+
+## Stage 2 — Analyzer Execution
+
+The selected analyzer is called via HTTP. The orchestrator calls each service at its Docker-internal URL (all containers on port 5000 internally):
+
+| Analyzer | Internal URL | request format |
+|---|---|---|
+| malware | `http://malware-analyzer:5000/api/malware-analyzer/` | `multipart/form-data` file |
+| steg | `http://steg-analyzer:5000/api/steg-analyzer/upload` | `multipart/form-data` file (async: poll `/status`, `/result`) |
+| recon | `http://recon-analyzer:5000/api/Recon-Analyzer/scan` | JSON `{"query": "ip_or_domain"}` |
+| recon (OSINT) | `http://recon-analyzer:5000/api/Recon-Analyzer/footprint` | JSON `{"query": "email_or_phone_or_username"}` |
+| web | `http://web-analyzer:5000/api/web-analyzer/` | JSON `{"url": "..."}` |
+| macro | `http://macro-analyzer:5000/api/macro-analyzer/analyze` | `multipart/form-data` file |
+
+The response is passed through the matching adapter and the result is appended to the Findings Store:
+
+```python
+{
+    "analyzer": "malware",    # which analyzer ran
+    "pass":     1,            # current pass number
+    "input":    "sample.exe", # what was analyzed
+    "findings": [...],        # normalised finding dicts
+    "risk_score": 8.5,        # 0.0 – 10.0
+    "raw_output": "...",      # full text output (AI reads this)
+}
+```
+
+---
+
+## Stage 3 — AI Routing Decision
+
+```
+raw_output (full text, NOT truncated)
+    │
+    ▼
+┌─────────────────────────────────────────────┐
+│  Regex artifact extraction (engine.py)    │
+│  — URLs, IPv4 addresses, domain names    │
+│  Noise-filter: glibc, pypi, localhost...  │
+└───────────────┬──────────────────────────────┘
+               │  focused context: artifacts + raw excerpt
+               ▼
+┌─────────────────────────────────────────────┐
+│  Groq qwen/qwen3-32b                      │
+│  system: "/no_think"                      │
+│  Instruction: return JSON                 │
+│  {next_tool, target, reasoning}           │
+└───────────────┬──────────────────────────────┘
+               │
+    ┌─────────┴─────────────────┐
+   JSON                        Non-JSON or empty
+    │                              │
+    │                    Keyword grep fallback:
+    │                    scan raw_output vs keywords.txt
+    │                    → rule-based routing decision
+    │                              │
+    └───────────────────────────┘
+               │
+    {"next_tool": "web" | "malware" | "steg" | "recon" | "macro" | null,
+     "target":   "the exact value to pass to the next analyzer",
+     "reasoning": "human-readable explanation"}
+```
+
+`next_tool: null` = the loop should consider terminating.
+
+---
+
+## Stage 4 — Loop Control
+
+```
+while pass_num <= max_passes:
+
+    run analyzer(current_tool, current_input)
+    append result → Findings Store
+    AI decision → {next_tool, target}
+
+    if next_tool is not null:
+        if (next_tool, target) already visited: break  # cycle guard
+        current_tool  = next_tool
+        current_input = normalise(next_tool, target)
+        continue
+
+    # next_tool is null — try download-and-analyze before stopping
+    if pass_num < max_passes:
+        candidates = extract HTTP/S URLs from raw_output + findings
+        for url in candidates (file-ext URLs first):
+            download url (stream, 50 MB cap)
+            if content-type is text/html or text/plain: skip
+            analyzer = pick by content-type → extension → python-magic
+            set current_tool = analyzer, current_input = tmp_file_path
+            prepend payload_downloaded finding on next result
+            continue outer loop
+
+    # no download worked or max passes reached
+    break
+
+clean up temp download files
+→ proceed to Report Generation
+```
+
+### Cycle Guard
+
+The tuple `(tool, normalized_target)` is tracked in `visited`. If the AI tries to route to the same `(tool, target)` pair twice, the loop terminates to prevent infinite cycling.
+
+### Early Termination Conditions
+
+| Condition | Action |
+|---|---|
+| AI returns `null` and no downloadable payloads found | Break |
+| Max passes reached | Break after current pass |
+| `(tool, target)` already in `visited` | Break (cycle guard) |
+| AI provides a target that fails normalization | Break with warning log |
+
+---
+
+## Stage 5 — Download-and-Analyze
+
+When the AI has no next tool but loop budget remains:
+
+1. Regex-scan `raw_output` + all finding `evidence` fields for `https?://` URLs not yet downloaded this run.
+2. Sort: URLs with known payload extensions (`.exe`, `.dll`, `.docx`, `.png`, …) first, then generic URLs.
+3. For each candidate URL:
+   - Stream-download (30s timeout, 50 MB hard cap).
+   - Check `Content-Type` response header. Skip `text/html`, `text/plain`, `text/css`, `application/json` etc. (web pages, not payloads).
+   - Pick analyzer: `Content-Type` → URL file extension → python-magic on the temp file.
+   - Set `pending_source_url` = the download URL.
+   - On the next pass result, prepend a `payload_downloaded` finding (severity: `high`) with the source URL — this always appears in the report regardless of analysis results.
+4. If a payload was successfully queued, `continue` the loop (skip target normalisation).
+5. If no URL yields a payload, break normally.
+
+---
+
+## Stage 6 — Report Generation
+
+```
+Findings Store (all passes)
+    │
+    ▼
+┌──────────────────────────────────────────┐
+│  Report Generator                         │
+│                                           │
+│  1. Build base report from findings       │
+│  2. Groq: generate executive summary      │
+│     + actionable recommendations          │
+│  3. Render PWNDoc HTML:                   │
+│     - Risk score cards (per pass + total) │
+│     - Per-pass collapsible findings table │
+│       "Pass N — Analyzer Name"            │
+│     - Evidence rendered by type:          │
+│       VT stats tables, AV badge rows,     │
+│       VBA code blocks, IOC chip lists,    │
+│       amber payload-download banners      │
+│  4. "Export PDF" button (window.print())  │
+│  5. Write to /app/reports/<job_id>.html   │
+└──────────────────────────────────────────┘
+```
+
+The report is a **self-contained HTML file** — no server needed to view. All CSS is inline. The "Export PDF" button calls `window.print()` after expanding all `<details>` so nothing is hidden in the PDF.
+
+---
+
+## Full Walk-Through Example
+
+```
+Input: invoice.xlsm   Max passes: 5
+
+─── Pass 1 ────────────────────────────────────────────────────
+Classifier: ZIP + .xlsm extension → macro rule → Macro Analyzer
+Macro Analyzer output:
+  olevba: risk=malicious, AutoExec+Suspicious flags
+  IOC: http://evil.sh/drop.exe (found in macro code)
+  VirusTotal: 12 / 70 engines flagged
+Findings Store: [macro_pass1]
+
+AI Decision: URL in IOCs → Web Analyzer on http://evil.sh/drop.exe
+
+─── Pass 2 ────────────────────────────────────────────────────
+Web Analyzer input: http://evil.sh/drop.exe
+Web output: endpoint alive, 302 redirect to CDN, missing security headers
+Findings Store: [macro_pass1, web_pass2]
+
+AI Decision: null (no further tool identified from web scan)
+→ Download-and-analyze fallback:
+  URL http://evil.sh/drop.exe found in raw_output
+  Content-Type: application/x-dosexec → malware analyzer
+  Download: drop.exe (2.1 MB) → temp file
+  pending_source_url = http://evil.sh/drop.exe
+
+─── Pass 3 ────────────────────────────────────────────────────
+Malware Analyzer input: /tmp/secflow_abc123.exe
+Result prepended with payload_downloaded finding:
+  severity: high, evidence: http://evil.sh/drop.exe
+Ghidra: C2 callout to 185.220.101.50 in decompile
+VirusTotal: 45 / 70 — Trojan.GenericKDZ, RAT, Downloader
+Findings Store: [macro_pass1, web_pass2, malware_pass3]
+
+AI Decision: IP found → Recon Analyzer on 185.220.101.50
+
+─── Pass 4 ────────────────────────────────────────────────────
+Recon input: 185.220.101.50
+Talos: blacklisted, Tor: is exit node
+ThreatFox: MintsLoader malware, confidence 100%
+Findings Store: [macro_pass1, web_pass2, malware_pass3, recon_pass4]
+
+AI Decision: null (no further signals)
+→ No download candidates → break
+
+─── Report Generation ──────────────────────────────────────
+All 4 passes → Groq summary → PWNDoc HTML
+Output: /app/reports/<job_id>.html (Export PDF button included)
+```
 
 ```
 User Input
