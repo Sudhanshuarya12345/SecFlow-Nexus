@@ -1,0 +1,61 @@
+# ReconGraph CLI Test Cases
+# Run these commands with: docker run --rm recongraph <command>
+# ============================================================
+
+# ============================================================
+# SCAN EXAMPLES - IP Addresses & Domains
+# ============================================================
+
+# 1. Scan Google DNS (known safe IP)
+docker run --rm recongraph scan 8.8.8.8
+
+# 2. Scan Cloudflare DNS
+docker run --rm recongraph scan 1.1.1.1
+
+# 3. Scan a popular domain (Google)
+docker run --rm recongraph scan google.com
+
+# 4. Scan GitHub domain
+docker run --rm recongraph scan github.com
+
+# 5. Scan a security-focused domain
+docker run --rm recongraph scan cloudflare.com
+
+
+# ============================================================
+# FOOTPRINT EXAMPLES - Usernames, Emails, Phones
+# ============================================================
+
+# 1. Username search - ClstDegen
+docker run --rm recongraph footprint ClstDegen
+
+# 2. Username search - common tech username
+docker run --rm recongraph footprint defcon
+
+# 3. Username search - random test
+docker run --rm recongraph footprint cyber_hunter_2025
+
+# 4. Email breach check
+docker run --rm recongraph footprint test@example.com
+
+# 5. Phone number validation (US format)
+docker run --rm recongraph footprint +14155552671
+
+
+# ============================================================
+# QUICK TEST COMMANDS (Copy-Paste Ready)
+# ============================================================
+
+# Run all 5 scan tests:
+docker run --rm recongraph scan 8.8.8.8
+docker run --rm recongraph scan 1.1.1.1
+docker run --rm recongraph scan google.com
+docker run --rm recongraph scan github.com
+docker run --rm recongraph scan cloudflare.com
+
+# Run all 5 footprint tests:
+docker run --rm recongraph footprint ClstDegen
+docker run --rm recongraph footprint defcon
+docker run --rm recongraph footprint cyber_hunter_2025
+docker run --rm recongraph footprint test@example.com
+docker run --rm recongraph footprint +14155552671
