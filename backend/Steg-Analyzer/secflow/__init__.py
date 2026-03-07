@@ -1,4 +1,4 @@
-"""Main intelx module"""
+"""Main secflow module"""
 
 # flake8: noqa: E203,E501,W503
 # pylint: disable=C0413,W0718,R0903,R0801

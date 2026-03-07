@@ -1,7 +1,7 @@
 # flake8: noqa: E203,E501,W503
 # pylint: disable=E1101,C0413,W0212,W0718,R0903,R0801
 # mypy: disable-error-code=unused-awaitable
-"""This module defines the database models for the IntelX application."""
+"""This module defines the database models for the SecFlow application."""
 
 import itertools
 import shutil
@@ -22,8 +22,8 @@ from sqlalchemy import (
     String,
 )
 
-from intelx.config import MAX_PENDING_TIME, MAX_STORE_TIME, RESULT_FOLDER
-from intelx.utils.utils import get_resolutions, get_valid_depth_color_pairs
+from secflow.config import MAX_PENDING_TIME, MAX_STORE_TIME, RESULT_FOLDER
+from secflow.utils.utils import get_resolutions, get_valid_depth_color_pairs
 
 db: SQLAlchemy = SQLAlchemy()
 
@@ -204,7 +204,7 @@ def cleanup_old_entries() -> None:
         ):
             # Processing took too long, delete
             db.session.delete(submission)  # pylint: disable=no-member
-        elif submission.status == "done":  # type: ignore
+        elif submission.status in ("done", "completed"):  # type: ignore
             # Search for buggy results, delete
             result_path = RESULT_FOLDER / str(submission.image_hash) / str(submission.hash)
             result_file = result_path / "results.json"

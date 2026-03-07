@@ -13,13 +13,13 @@ This file captures repository-specific context for `backend/Steg-Analyzer` so fu
 
 ## Key Paths
 
-- App entrypoint: `intelx/app.py`
-- Worker pipeline: `intelx/workers.py`
-- Analyzer base abstraction: `intelx/analyzers/base_analyzer.py`
-- Analyzer implementations: `intelx/analyzers/*.py`
-- Models + cleanup: `intelx/models.py`
-- Config: `intelx/config.py`
-- WSGI target: `intelx/utils/wsgi.py`
+- App entrypoint: `secflow/app.py`
+- Worker pipeline: `secflow/workers.py`
+- Analyzer base abstraction: `secflow/analyzers/base_analyzer.py`
+- Analyzer implementations: `secflow/analyzers/*.py`
+- Models + cleanup: `secflow/models.py`
+- Config: `secflow/config.py`
+- WSGI target: `secflow/utils/wsgi.py`
 - Local compose: `compose.yml`
 
 ## API Surface (current)
@@ -57,7 +57,7 @@ Blueprint prefix: `/api/steg-analyzer`
 3. UploadLog is written (IP + User-Agent + hashes).
 4. Existing submission short-circuits if same submission already exists.
 5. Image/submission DB rows are created/updated.
-6. RQ job `intelx.workers.analyze_image` is enqueued.
+6. RQ job `secflow.workers.analyze_image` is enqueued.
 7. Worker loads submission + image, marks status `running`.
 8. Worker starts one thread per analyzer and waits for all joins.
 9. Analyzer outputs are merged into a shared `results.json`.
@@ -112,7 +112,7 @@ From `.env.example`:
 
 From `compose.yml`:
 
-- app maps host `5002 -> container 5000`.
+- app maps host `5000 -> container 5000`.
 - separate services: `web`, `worker`, `redis`, `postgres`, `initdb`, `rqdashboard`.
 
 ## Integration Notes for SecFlow Orchestrator
@@ -151,13 +151,13 @@ docker compose up --build
 Test upload:
 
 ```bash
-curl -X POST "http://localhost:5002/api/steg-analyzer/upload" \
+curl -X POST "http://localhost:5000/api/steg-analyzer/upload" \
   -F "image=@example/example1.png"
 ```
 
 Then query:
 
 ```bash
-curl "http://localhost:5002/api/steg-analyzer/status/<submission_hash>"
-curl "http://localhost:5002/api/steg-analyzer/result/<submission_hash>"
+curl "http://localhost:5000/api/steg-analyzer/status/<submission_hash>"
+curl "http://localhost:5000/api/steg-analyzer/result/<submission_hash>"
 ```

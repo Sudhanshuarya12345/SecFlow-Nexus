@@ -1,7 +1,7 @@
 # flake8: noqa: E203,E501,W503
 # pylint: disable=C0413,W0718,R0903,R0801,R0915
 # mypy: disable-error-code=unused-awaitable
-"""IntelX Flask application."""
+"""SecFlow Flask application."""
 
 import hashlib
 import json
@@ -44,7 +44,12 @@ def create_app() -> Flask:
     app.config["REDIS_QUEUE"] = Queue(connection=Redis.from_url(redis_url))
     db.init_app(app)
 
-    bp = Blueprint('api', __name__, url_prefix='/api/steg-analyzer')
+    bp = Blueprint("api", __name__, url_prefix="/api/steg-analyzer")
+
+    @app.route("/", methods=["GET"])
+    def root() -> tuple[Response, int]:
+        """Container-level health endpoint."""
+        return jsonify({"message": "SecFlow Steg-Analyzer Backend is running"}), 200
 
     @app.errorhandler(413)
     def too_large(_: Any) -> tuple[Response, int]:
@@ -60,7 +65,7 @@ def create_app() -> Flask:
     @bp.route("/")
     def index() -> tuple[Response, int]:
         """Root endpoint."""
-        return jsonify({"message": "IntelX Steg-Analyzer Backend is running"}), 200
+        return jsonify({"message": "SecFlow Steg-Analyzer Backend is running"}), 200
 
     @bp.route("/upload", methods=["POST"])
     def upload_image() -> tuple[Response, int]:
@@ -171,7 +176,7 @@ def create_app() -> Flask:
 
         # Start the analysis jobs
         app.config["REDIS_QUEUE"].enqueue(
-            "intelx.workers.analyze_image", submission.hash, job_timeout=300
+            "secflow.workers.analyze_image", submission.hash, job_timeout=300
         )
 
         # Return submission identifier

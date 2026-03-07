@@ -1,7 +1,7 @@
 # ==========================
 # Stage 1 : Builder (download OpenStego)
 # ==========================
-FROM python:3.14-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Install wget only to download OpenStego
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -37,7 +37,7 @@ RUN rm -rf /tmp/jphs
 # ==========================
 # Stage 2 : Image runtime minimale
 # ==========================
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -68,15 +68,18 @@ RUN dpkg -i /tmp/openstego.deb || apt-get install -f -y --no-install-recommends 
     && rm -rf /var/lib/apt/lists/*
 
 # Copy app
-COPY intelx/ /app/intelx/
+COPY secflow/ /app/secflow/
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r /app/intelx/requirements.txt
+RUN pip install --no-cache-dir -r /app/secflow/requirements.txt
 
 # Copy jphide and jsteg binaries
 COPY --from=builder /usr/local/bin/jphide /usr/local/bin/jphide
 COPY --from=builder /usr/local/bin/jpseek /usr/local/bin/jpseek
 COPY --from=builder /usr/local/bin/jsteg /usr/local/bin/jsteg
 
+# Expose application port
+EXPOSE 5000
+
 # Commande de lancement
-CMD ["gunicorn", "-w", "8", "-b", "0.0.0.0:5000", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "--capture-output", "intelx.utils.wsgi:application"]
+CMD ["gunicorn", "-w", "8", "-b", "0.0.0.0:5000", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "--capture-output", "secflow.utils.wsgi:application"]
