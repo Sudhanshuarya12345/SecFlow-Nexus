@@ -200,7 +200,10 @@ def _call_macro(file_path: str, pass_number: int) -> dict[str, Any]:
         log.info(f"[macro] Analysis complete for {file_path}, risk_level={raw.get('risk_level')}")
     except Exception as e:
         log.error(f"[macro] Call failed: {e}")
-        raw = {}
+        raw = {
+            "success": False,
+            "error": f"macro-analyzer call failed: {e}",
+        }
     return macro_adapter.adapt(raw, pass_number, file_path)
 
 
