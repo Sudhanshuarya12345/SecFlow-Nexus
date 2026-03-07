@@ -105,7 +105,97 @@ def _adapt_scan(raw: dict[str, Any]) -> tuple[list[dict], list[str]]:
             "evidence": json.dumps(threatfox),
         })
 
+    # VirusTotal
+    vt = raw.get("virustotal", {})
+    if vt:
+        _adapt_virustotal(vt, query, findings, raw_parts)
+
     return findings, raw_parts
+
+
+def _adapt_virustotal(
+    vt: dict[str, Any],
+    query: str,
+    findings: list[dict],
+    raw_parts: list[str],
+) -> None:
+    """Parse a VirusTotal result dict and append findings + raw_parts in-place."""
+    if not vt.get("found", False):
+        err = vt.get("error", "unknown error")
+        raw_parts.append(f"virustotal: not available ({err})")
+        # Do NOT emit a visible finding — just log for AI context
+        return
+
+    vt_type   = vt.get("type", "unknown")      # "ip", "domain", "url"
+    malicious  = vt.get("malicious", 0)
+    suspicious = vt.get("suspicious", 0)
+    harmless   = vt.get("harmless", 0)
+    undetected = vt.get("undetected", 0)
+    total      = vt.get("total", 0)
+    reputation = vt.get("reputation", 0)
+    engines    = vt.get("engines", [])
+    link       = vt.get("link", "")
+
+    raw_parts.append(
+        f"virustotal ({vt_type}): malicious={malicious}, suspicious={suspicious}, "
+        f"harmless={harmless}, undetected={undetected}, total={total}, "
+        f"reputation={reputation}"
+    )
+    if engines:
+        raw_parts.append(
+            "  detections: " + ", ".join(
+                f"{e['engine']}={e['result']}" for e in engines[:5]
+            )
+        )
+
+    # Severity logic
+    if malicious >= 10:
+        severity = "critical"
+    elif malicious >= 3 or (malicious > 0 and suspicious >= 3):
+        severity = "high"
+    elif malicious > 0 or suspicious >= 5:
+        severity = "medium"
+    elif suspicious > 0:
+        severity = "low"
+    else:
+        severity = "info"
+
+    # Detection summary detail
+    flag_pct = round((malicious + suspicious) / total * 100) if total else 0
+    detail = (
+        f"VirusTotal ({vt_type.upper()}): {malicious} malicious, {suspicious} suspicious "
+        f"out of {total} engines ({flag_pct}% flagged)"
+    )
+    if reputation < -10:
+        detail += f" — reputation score: {reputation}"
+
+    findings.append({
+        "type": "virustotal_scan",
+        "detail": detail,
+        "severity": severity,
+        "evidence": json.dumps({
+            "found":      True,
+            "type":       vt_type,
+            "query":      query,
+            "malicious":  malicious,
+            "suspicious": suspicious,
+            "harmless":   harmless,
+            "undetected": undetected,
+            "total":      total,
+            "reputation": reputation,
+            "stats":      vt.get("stats", {}),
+            "engines":    engines,
+            # type-specific extras
+            "country":       vt.get("country", ""),
+            "as_owner":      vt.get("as_owner", ""),
+            "asn":           vt.get("asn"),
+            "network":       vt.get("network", ""),
+            "registrar":     vt.get("registrar", ""),
+            "categories":    vt.get("categories", {}),
+            "creation_date": vt.get("creation_date"),
+            "final_url":     vt.get("final_url", ""),
+        }),
+    })
 
 
 def _adapt_footprint(raw: dict[str, Any]) -> tuple[list[dict], list[str]]:
