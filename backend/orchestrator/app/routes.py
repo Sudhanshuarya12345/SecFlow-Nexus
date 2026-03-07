@@ -2,15 +2,18 @@
 Flask routes for the SecFlow Orchestrator service.
 
 Exposes:
-  POST /api/smart-analyze   — main pipeline entry point
-  GET  /api/health          — health check
+  POST /api/smart-analyze          — main pipeline entry point
+  GET  /api/health                 — health check
+  GET  /api/report/<job_id>/json   — download JSON report
+  GET  /api/report/<job_id>/html   — view HTML report
 """
 
+import hashlib
 import os
 import tempfile
-import uuid
+from pathlib import Path
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 from app.orchestrator import run_pipeline
 from app.reporter.report_generator import generate_report
@@ -82,11 +85,12 @@ def smart_analyze():
         if store.is_empty():
             return jsonify({"error": "Pipeline produced no findings"}), 500
 
-        job_id = str(uuid.uuid4())[:8]
-        output_dir = f"/tmp/secflow_reports/{job_id}"
+        job_id = hashlib.sha256(user_input.encode()).hexdigest()[:16]
+        output_dir = f"/app/reports/{job_id}"
 
         report_paths = generate_report(
             findings_json=store.to_json(),
+            job_id=job_id,
             output_dir=output_dir,
             base_name="report",
         )
@@ -100,6 +104,10 @@ def smart_analyze():
             "overall_risk_score": round(overall_risk, 2),
             "findings_summary": all_findings,
             "report_paths": report_paths,
+            "report_urls": {
+                "json": f"/api/report/{job_id}/json",
+                "html": f"/api/report/{job_id}/html",
+            },
         }), 200
 
     except Exception as e:
@@ -112,3 +120,37 @@ def smart_analyze():
                 os.unlink(tmp_path)
             except Exception:
                 pass
+
+
+_REPORT_MIME = {
+    "json": "application/json",
+    "html": "text/html",
+}
+
+
+@bp.route("/api/report/<job_id>/<fmt>", methods=["GET"])
+def get_report(job_id: str, fmt: str):
+    """
+    Retrieve a generated report by job_id and format.
+
+    GET /api/report/<job_id>/json
+    GET /api/report/<job_id>/html
+    """
+    if fmt not in _REPORT_MIME:
+        return jsonify({"error": f"Unknown format '{fmt}'. Use json or html."}), 400
+
+    # Sanitize job_id — only allow lowercase hex chars (SHA-256 prefix)
+    if not job_id or not all(c in "0123456789abcdef" for c in job_id):
+        return jsonify({"error": "Invalid job_id"}), 400
+
+    report_path = Path(f"/app/reports/{job_id}/report.{fmt}")
+
+    if not report_path.exists():
+        return jsonify({"error": f"Report not found for job_id '{job_id}'"}), 404
+
+    return send_file(
+        str(report_path),
+        mimetype=_REPORT_MIME[fmt],
+        as_attachment=(fmt == "json"),
+        download_name=f"secflow_report_{job_id}.{fmt}",
+    )
