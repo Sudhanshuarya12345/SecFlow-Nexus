@@ -35,5 +35,5 @@ class FindingsStore:
         return findings[-1] if findings else None
 
     def save_to_disk(self, path: str) -> None:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(self.to_json())
