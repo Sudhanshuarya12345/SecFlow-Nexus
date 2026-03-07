@@ -1,0 +1,86 @@
+services:
+  web:
+    build: .
+    container_name: intelx-web
+    restart: always
+    command: ["flask", "--app", "intelx.app", "run", "--host=0.0.0.0", "--port=5000"]
+    ports:
+      - "5002:5000"
+    volumes:
+      - ./intelx:/app/intelx
+    depends_on:
+      postgres:
+        condition: service_healthy
+      initdb:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      worker:
+        condition: service_started
+    env_file:
+      - .env.example
+
+  worker:
+    build: .
+    container_name: intelx-worker
+    restart: always
+    command: rq worker default --url redis://redis:6379/0
+    volumes:
+      - ./intelx:/app/intelx
+    depends_on:
+      postgres:
+        condition: service_healthy
+      initdb:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    env_file:
+      - .env.example
+
+  initdb:
+    build: .
+    container_name: intelx-initdb
+    command: python -m intelx.utils.init_db
+    volumes:
+      - ./intelx:/app/intelx
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.example
+    restart: "no"
+
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: always
+    env_file:
+      - .env.example
+
+  postgres:
+    image: postgres:14
+    container_name: postgres
+    restart: always
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intelxuser -d intelx"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    env_file:
+      - .env.example
+
+  rqdashboard:
+    image: eoranged/rq-dashboard
+    container_name: rq-dashboard
+    restart: always
+    ports:
+      - "9181:9181"
+    depends_on:
+      - redis
+    env_file:
+      - .env.example
+
+volumes:
+  pgdata:
