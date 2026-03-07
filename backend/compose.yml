@@ -11,7 +11,7 @@
 # Steg dependencies (PostgreSQL + Redis + RQ worker) are also included.
 #
 # Usage:
-#   cp .env.example .env      # fill in GEMINI_API_KEY, VIRUSTOTAL_API_KEY
+#   cp .env.example .env      # fill in GROQ_API_KEY, VIRUSTOTAL_API_KEY
 #   docker compose up --build
 
 services:
@@ -25,13 +25,15 @@ services:
     ports:
       - "5000:5000"
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
       - MALWARE_ANALYZER_URL=http://malware-analyzer:5000/api/malware-analyzer
       - STEG_ANALYZER_URL=http://steg-analyzer:5000/api/steg-analyzer
       - RECON_ANALYZER_URL=http://recon-analyzer:5000/api/Recon-Analyzer
       - WEB_ANALYZER_URL=http://web-analyzer:5000/api/web-analyzer
       - MAX_PASSES=${MAX_PASSES:-3}
       - PYTHONUNBUFFERED=1
+    volumes:
+      - ./reports:/app/reports
     depends_on:
       malware-analyzer:
         condition: service_healthy
