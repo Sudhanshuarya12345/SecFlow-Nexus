@@ -569,6 +569,16 @@ def run_pipeline(user_input: str, max_passes: int = 3) -> FindingsStore:
             log.warning(f"[pipeline] Target normalization failed for tool={decision['next_tool']!r} — stopping")
             break
 
+        # For file-based tools (steg/malware/macro), if the AI returned a bare filename
+        # without a directory path, it can't know the actual temp path — use current file.
+        if decision["next_tool"] in ("steg", "malware", "macro"):
+            if not os.path.isabs(next_input) and not os.path.exists(next_input):
+                log.warning(
+                    f"[pipeline] AI returned unresolvable file target {next_input!r} "
+                    f"for {decision['next_tool']} — using current input {current_input!r}"
+                )
+                next_input = current_input
+
         current_tool  = decision["next_tool"]
         current_input = next_input
 

@@ -234,6 +234,11 @@ def _build_prompt(
 
     tools_not_run = [t for t in ANALYZER_NAMES if t not in tools_run]
 
+    has_urls    = bool(artifacts.get("urls"))
+    has_ips     = bool(artifacts.get("ips"))
+    has_domains = bool(artifacts.get("domains"))
+    has_any_artifacts = has_urls or has_ips or has_domains
+
     return f"""You are a SOC (Security Operations Center) analyst reviewing data from SecFlow, an automated threat analysis pipeline.
 
 ### Completed Pass
@@ -242,6 +247,7 @@ def _build_prompt(
 - Findings: {findings_count}  |  Risk score: {risk_score}/10
 - Tools already run this session: {tools_run}
 - Tools not yet run: {tools_not_run}
+- Artifacts found: URLs={has_urls}, IPs={has_ips}, Domains={has_domains}
 
 ### Extracted Artifacts (from full analyzer output)
 ```json
@@ -254,28 +260,43 @@ def _build_prompt(
 ```
 
 ### Your Task
-As a SOC analyst, decide the single best NEXT analysis step based on the artifacts and findings above.
+Decide whether there is concrete, actionable evidence to justify ONE more analysis pass.
+You are NOT required to use all remaining passes — stop as soon as the findings are exhausted.
 
-**Decision rules (evaluate in order):**
-1. If URLs were found → `"web"` with the most suspicious/user-facing URL as target
-2. If `recon` has NOT run yet and there are IPs or domains → `"recon"` with the most suspicious IP or domain
-3. If `recon` just ran on a domain and `web` has NOT run → `"web"` with `"https://<domain>"` as target
-4. If `web` just ran on a URL and `recon` has NOT run → `"recon"` with the bare hostname (no https://) as target
-5. If an extracted/embedded file path is found → `"malware"` or `"steg"` depending on type
-6. If `{current_tool}` found domains/IPs inside decompiled code or data strings / VBA macros → treat as artifacts and apply rules 1-4
-7. If `macro` just ran and IOCs contain URLs/IPs/domains → apply rules 1-2 to those IOCs
-8. If no passes remain or no new useful artifacts → `null`
+## STOP CONDITIONS — return `null` immediately if ANY of these are true:
+- No artifacts were extracted (no URLs, IPs, or domains found)
+- All extracted artifacts are internal/library noise (e.g. libc, gnu.org, localhost, example.com)
+- Every available tool that could add value has already run
+- The only remaining artifact is the same domain/IP that was already analyzed
+- The last analyzer returned risk_score 0 and 0 findings
+- You have no concrete evidence — only a vague guess about what MIGHT be useful
+- Passes remaining = 0
+
+## CONTINUE CONDITIONS — only return a tool if ALL of these are true:
+- There is at least one concrete, external, user-facing artifact (URL / IP / domain) that has NOT been analyzed yet
+- The artifact was actually present in the analyzer output or findings — not inferred or predicted
+- Running the next tool on that artifact would meaningfully add new information
+- The (tool, target) pair has NOT already been run this session
+
+## Decision rules (only apply if continue conditions are met, evaluate in order):
+1. Concrete external URL found → `"web"` with that URL as target
+2. Concrete external IP or domain found and `recon` not yet run → `"recon"` with the most suspicious one
+3. `recon` just ran on a domain and external URL exists for it and `web` not yet run → `"web"` with `"https://<domain>"`
+4. `web` just ran and `recon` not yet run and a bare hostname/IP is available → `"recon"` with that hostname
+5. Embedded file path or binary blob extracted → `"malware"` / `"steg"` depending on file type
+6. `macro` ran and its IOCs contain external URLs/IPs/domains → apply rules 1-2 to those IOCs
 
 **IMPORTANT:**
-- `target` must be the **exact string** to pass to the next analyzer (full URL for web, bare domain/IP for recon, file path for malware/steg)
+- `target` must be the **exact string** to pass to the next analyzer (full URL for web, bare domain/IP for recon)
+- Never predict a target that was NOT actually present in the output — do not hallucinate artifacts
 - Never repeat the same (tool, target) pair already in `tools_run`
-- Prefer analyzing user-visible external domains over internal library stubs
+- When in doubt, return `null` — an incomplete but accurate pipeline is better than noise
 
 Respond ONLY with a JSON object — no markdown, no code fences, no extra text:
 {{
   "next_tool": "<malware | steg | recon | web | macro | null>",
   "target": "<exact value to analyze, or null if next_tool is null>",
-  "reasoning": "<one sentence explaining the decision>"
+  "reasoning": "<one sentence explaining why this tool OR why stopping>"
 }}"""
 
 
@@ -306,6 +327,26 @@ def decide_next(
         f"[AI] Artifacts extracted — urls={artifacts['urls']}, "
         f"ips={artifacts['ips']}, domains={artifacts['domains']}"
     )
+
+    # ── Hard pre-check: skip AI call entirely when no network artifacts exist ──
+    # Calling the model with empty artifacts leads to hallucinated tool suggestions.
+    # File-based analyzers (malware/steg/macro) emit findings but not network IOCs;
+    # without concrete IPs/domains/URLs there is nothing actionable to route to.
+    no_network_artifacts = (
+        not artifacts["urls"]
+        and not artifacts["ips"]
+        and not artifacts["domains"]
+    )
+    if no_network_artifacts:
+        log.info(
+            "[AI] Pre-check: no network artifacts extracted — "
+            "skipping AI call and terminating pipeline"
+        )
+        return {
+            "next_tool": None,
+            "target":    None,
+            "reasoning": "No network artifacts (URLs/IPs/domains) found — pipeline terminated",
+        }
 
     # Build a shorter focused excerpt for the prompt
     context = _build_context_excerpt(raw_output)
@@ -390,12 +431,30 @@ def _rule_based_decide(
 ) -> dict[str, Any]:
     """
     Deterministic rule-based routing when Gemini is unavailable (quota, network, etc.).
-    Applies the same decision rules as the SOC analyst prompt, in the same order.
+    Applies the same stop-first logic as the SOC analyst prompt.
     """
-    current_tool = analyzer_output.get("analyzer", "")
+    current_tool   = analyzer_output.get("analyzer", "")
+    findings_count = len(analyzer_output.get("findings", []))
+    risk_score     = float(analyzer_output.get("risk_score", 0))
     urls    = artifacts.get("urls", [])
     ips     = artifacts.get("ips", [])
     domains = artifacts.get("domains", [])
+
+    # Stop immediately if there are no artifacts and nothing to work with
+    if not urls and not ips and not domains:
+        return {
+            "next_tool": None,
+            "target":    None,
+            "reasoning": "Rule-based: no artifacts extracted — stopping pipeline",
+        }
+
+    # Stop if the last pass produced zero findings and zero risk
+    if findings_count == 0 and risk_score == 0.0:
+        return {
+            "next_tool": None,
+            "target":    None,
+            "reasoning": "Rule-based: last pass returned no findings and risk=0 — stopping pipeline",
+        }
 
     # Rule 1: URLs found → web (if not already run)
     if urls and "web" not in tools_run:
