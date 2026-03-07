@@ -108,11 +108,15 @@ requests.post("http://steg-analyzer:5002/api/steg-analyzer/", files={"file": ope
 
 **Service location:** `backend/Recon-Analyzer/` — source code under `src/`
 **Docker service name:** `recon-analyzer`
+**Container name:** `recon-analyzer-api` (in standalone compose); use `recon-analyzer` in SecFlow compose
 **Container port:** `5000` (internal); mapped to host port `5003` in SecFlow `compose.yml`
 **Internal Docker URL:** `http://recon-analyzer:5000/api/Recon-Analyzer/`
 **Base image:** `python:3.12-slim`
-**Production server:** `gunicorn` with 2 workers, 120s timeout
+**System deps:** `build-essential` only (lightweight — no JVM, no heavy downloads)
+**Production server:** `gunicorn` with 2 workers, 120s timeout — CMD: `gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 main:app`
 **API prefix:** `/api/Recon-Analyzer` (capital R and A — must be exact)
+**CORS:** Wildcard `*` — all origins, all methods allowed
+**Dockerfile:** Named `DockerFile` (capital F) on disk — compose must use `dockerfile: DockerFile`
 
 **Responsibility:**
 - Performs threat intelligence and OSINT reconnaissance on IPs, domains, emails, phone numbers, and usernames as an independent HTTP microservice.
@@ -123,6 +127,7 @@ requests.post("http://steg-analyzer:5002/api/steg-analyzer/", files={"file": ope
 
 | Method | Route | Purpose | Input |
 |---|---|---|---|
+| `GET` | `/` or `/api/Recon-Analyzer/` | Home — lists all endpoints | None |
 | `GET` | `/health` | Health check | None |
 | `POST` | `/scan` | IP/domain threat intel | `{"query": "ip_or_domain"}` |
 | `POST` | `/footprint` | Email/phone/username OSINT | `{"query": "email_or_phone_or_username"}` |
@@ -131,75 +136,96 @@ requests.post("http://steg-analyzer:5002/api/steg-analyzer/", files={"file": ope
 
 **How the Orchestrator calls it:**
 ```python
-# For IP or domain
+# For IP or domain (primary pipeline path)
 requests.post("http://recon-analyzer:5000/api/Recon-Analyzer/scan",
               json={"query": ip_or_domain}, timeout=60)
 
-# For email/phone/username OSINT (secondary use)
+# For email/phone/username OSINT (secondary — triggered by AI if previous pass surfaces an email)
 requests.post("http://recon-analyzer:5000/api/Recon-Analyzer/footprint",
               json={"query": email_or_username}, timeout=60)
 ```
 
-**Input auto-detection logic in `/scan`:**
-- Valid IPv4 → runs IP-based checks directly
-- Valid domain → resolves to IP via DNS, then runs both IP + domain checks
-- Invalid format → returns `400`
+**Input auto-detection logic in `/scan` (exact regexes from `main.py`):**
+```python
+IP_REGEX    = r'^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+DOMAIN_REGEX = r'^([a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$'
+```
+- Valid IPv4 → runs `ipapi`, `talos`, `tor` (IP-only checks)
+- Valid domain → DNS resolves to IP → runs `ipapi` + `talos` + `tor` on resolved IP, then `tranco` + `threatfox` on the domain string
+- Invalid format → returns `400 {"error": "Invalid IP or domain format."}`
+- Unresolvable domain → returns `400 {"error": "Unable to resolve domain: <domain>"}`
 
-**Analysis modules used internally:**
+**Input auto-detection logic in `/footprint`:**
+```python
+EMAIL_REGEX = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+PHONE_REGEX = r'^\+?[0-9]\d{1,14}$'
+```
+- Matches email regex → `type: "email"` → calls `checkEmail()` from `xposedornot.py`
+- Matches phone regex → `type: "phone"` → calls `validate_phone_number()` from `phone.py`
+- Neither match → `type: "username"` → calls `sagemode_wrapper()` from `username.py`
 
-| Module | File | What it does |
-|---|---|---|
-| `ipapi` | `attack/ipapi.py` | IP geolocation (country, ISP, ASN, timezone) via `ip-api.com` batch API |
-| `talos` | `attack/talos.py` | Checks IP against Cisco Talos IP blocklist (local file, auto-downloads from snort.org) |
-| `tor` | `attack/tor.py` | Checks if IP is a known Tor exit node (local file, auto-downloads from torproject.org) |
-| `tranco` | `attack/tranco.py` | Domain ranking lookup via Tranco list API (domains only) |
-| `threatfox` | `attack/threatfox.py` | IOC lookup via ThreatFox/abuse.ch API (domains only) |
-| `xposedornot` | `osint/xposedornot.py` | Email breach check via XposedOrNot API (footprint only) |
-| `phone` | `osint/phone.py` | Phone number validation via NumVerify API (footprint only) |
-| `username` | `osint/username.py` | Username search across social platforms using multithreaded scraping via Sagemode (footprint only) |
+**Analysis modules wired into `main.py`:**
+
+| Module | File | External API | What it returns |
+|---|---|---|---|
+| `ipapi` | `attack/ipapi.py` | `ip-api.com/batch` (POST) + `edns.ip-api.com/json` (GET) | `{ip_info: [...], dns_info: {...}}` — country, ISP, ASN, city, timezone |
+| `talos` | `attack/talos.py` | Local `src/media/talos.txt` (auto-downloads from `snort.org/downloads/ip-block-list`) | `{blacklisted: bool}` |
+| `tor` | `attack/tor.py` | Local `src/media/tor.txt` (auto-downloads from `check.torproject.org/exit-addresses`, parses IPs via regex) | `{is_tor_exit: bool}` |
+| `tranco` | `attack/tranco.py` | `tranco-list.eu/api/ranks/domain/{query}` (GET) | `{found: bool, rank: int}` — domains only |
+| `threatfox` | `attack/threatfox.py` | `threatfox-api.abuse.ch/api/v1/` (POST, `{"query":"search_ioc","search_term":...}`) — returns **first IOC match only** | `{found: bool, id, ioc, threat_type, malware, confidence_level, reference, link}` — domains only |
+| `xposedornot` | `osint/xposedornot.py` | Two calls: `api.xposedornot.com/v1/check-email/{email}` then `api.xposedornot.com/v1/breach-analytics?email={email}` | `{exposed: bool, breach_count, breaches: [...], password_strength: [...], risk: {...}}` |
+| `phone` | `osint/phone.py` | `apilayer.net/api/validate` (GET) via NumVerify | `{valid: bool, country_code, country_name, location, carrier, line_type}` |
+| `username` | `osint/username.py` | Multithreaded HTTP scraping (Sagemode class) — 15s timeout per thread, uses `osint/sites.py` list | `[{site: str, url: str}, ...]` |
+
+**Files that exist but are NOT imported or used in `main.py` — do NOT include in adapter:**
+- `attack/whoisripe.py` — standalone RIPE database lookup; has a bare `print()` at module level (dev script only)
+- `attack/onyphe.py` — Onyphe.io API; has a bare `print()` at module level (dev script only); uses `onypheAPI_KEY` env var
+- `attack/tweetfeeds.py` — completely empty file, no implementation
+- `src/cli.py` — CLI entrypoint for manual testing; not used by the Flask app
 
 **`/scan` response shape:**
 ```json
 {
   "query": "8.8.8.8",
-  "ipapi":    { "ip_info": [...], "dns_info": {...} },
+  "ipapi":    { "ip_info": [{"status":"success","country":"US","isp":"Google LLC","as":"AS15169 Google LLC",...}], "dns_info": {...} },
   "talos":    { "blacklisted": false },
   "tor":      { "is_tor_exit": false },
-  "tranco":   { "found": true, "rank": 42 },       // domains only
-  "threatfox": { "found": false }                   // domains only
+  "tranco":   { "found": true, "rank": 1 },         // domains only — absent for plain IP
+  "threatfox": { "found": true, "malware": "MintsLoader", "confidence_level": 100, ... }  // domains only — absent for plain IP
 }
 ```
 
-**`/footprint` response shape (email):**
+**`/footprint` response shapes:**
 ```json
-{
-  "query": "user@example.com",
-  "type": "email",
-  "email_scan": {
-    "exposed": true,
-    "breach_count": 3,
-    "breaches": [...],
-    "password_strength": [...],
-    "risk": {...}
-  }
-}
+// Email
+{ "query": "user@example.com", "type": "email",
+  "email_scan": { "exposed": true, "breach_count": 186, "breaches": [...], "password_strength": [...], "risk": [{"risk_label":"Critical","risk_score":100}] } }
+
+// Phone
+{ "query": "+14155552671", "type": "phone",
+  "phone_scan": { "valid": true, "country_code": "US", "country_name": "United States", "location": "California", "carrier": "AT&T", "line_type": "mobile" } }
+
+// Username
+{ "query": "johndoe", "type": "username",
+  "username_scan": [{"site": "GitHub", "url": "https://github.com/johndoe"}, ...] }
 ```
 
-**Required environment variables:**
+**Required environment variables (from `.env.example`):**
 
 | Variable | Used by | Required? |
 |---|---|---|
-| `NUMVERIFY_API_KEY` | `phone.py` — phone validation | Optional |
-| `THREATFOX_API_KEY` | `threatfox.py` — IOC lookup | Optional (works without it, lower rate limit) |
-| `ipAPI_KEY` | `ipapi.py` — IP geolocation | Optional (free tier works without it) |
+| `NUMVERIFY_API_KEY` | `phone.py` — NumVerify via apilayer.net | Optional — without it returns `{"valid": false, "error": "API key not configured"}` |
+| `THREATFOX_API_KEY` | `threatfox.py` — added to `Auth-Key` header | Optional — API still called without it at lower rate limit |
+| `ipAPI_KEY` | `ipapi.py` — ip-api.com | Optional — free tier works without a key |
 
-**Local media files (auto-downloaded if missing):**
-- `src/media/talos.txt` — Talos IP blocklist (downloaded from `snort.org/downloads/ip-block-list`)
-- `src/media/tor.txt` — Tor exit node IPs (downloaded from `check.torproject.org/exit-addresses`)
+**Local media files (auto-downloaded on first request if missing):**
+- `src/media/talos.txt` — Cisco Talos IP blocklist (`snort.org/downloads/ip-block-list`)
+- `src/media/tor.txt` — Tor exit node IPs extracted from `check.torproject.org/exit-addresses` via regex
 
 **Classifier routing:** The orchestrator routes to `"recon"` when:
-- Input matches IPv4 regex `^\d{1,3}(\.\d{1,3}){3}$`
-- Input matches domain regex `^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$`
+- Input matches IPv4 regex (exact: `^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$`)
+- Input matches domain regex (exact: `^([a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$`)
+- URL rule (`https://...`) must be matched by the **web** rule first, before the domain rule
 
 **Output contract (after adapter):** `{ "analyzer": "recon", "pass": N, "input": str, "findings": [...], "risk_score": 0.0–10.0, "raw_output": str }`
 
