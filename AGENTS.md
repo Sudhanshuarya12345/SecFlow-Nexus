@@ -106,18 +106,104 @@ requests.post("http://steg-analyzer:5002/api/steg-analyzer/", files={"file": ope
 
 ### 6. Reconnaissance Analyzer
 
-**Service location:** `backend/recon-analyzer/`
-**Docker service:** `recon-analyzer` — runs at `http://recon-analyzer:5003/api/recon-analyzer/`
+**Service location:** `backend/Recon-Analyzer/` — source code under `src/`
+**Docker service name:** `recon-analyzer`
+**Container port:** `5000` (internal); mapped to host port `5003` in SecFlow `compose.yml`
+**Internal Docker URL:** `http://recon-analyzer:5000/api/Recon-Analyzer/`
+**Base image:** `python:3.12-slim`
+**Production server:** `gunicorn` with 2 workers, 120s timeout
+**API prefix:** `/api/Recon-Analyzer` (capital R and A — must be exact)
+
 **Responsibility:**
-- Performs OSINT and infrastructure reconnaissance on IPs, domains, and hostnames as an independent HTTP microservice.
-- Collects: WHOIS data, DNS records, open ports, geolocation, ASN, reverse DNS, threat intel lookups.
-- Returns its own native JSON response; the Orchestrator's `recon_adapter.py` translates it to the SecFlow contract.
+- Performs threat intelligence and OSINT reconnaissance on IPs, domains, emails, phone numbers, and usernames as an independent HTTP microservice.
+- Two distinct modes: **scan** (IP/domain threat intel) and **footprint** (email/phone/username OSINT).
+- Returns its own native JSON; the Orchestrator's `recon_adapter.py` translates it to the SecFlow contract.
+
+**Real API endpoints (all under `/api/Recon-Analyzer/`):**
+
+| Method | Route | Purpose | Input |
+|---|---|---|---|
+| `GET` | `/health` | Health check | None |
+| `POST` | `/scan` | IP/domain threat intel | `{"query": "ip_or_domain"}` |
+| `POST` | `/footprint` | Email/phone/username OSINT | `{"query": "email_or_phone_or_username"}` |
+
+> **The request body key is `query`, not `target`.** Generic docs assumed `{"target": "..."}` — the real service uses `{"query": "..."}`.
 
 **How the Orchestrator calls it:**
 ```python
-requests.post("http://recon-analyzer:5003/api/recon-analyzer/", json={"target": ip_or_domain})
+# For IP or domain
+requests.post("http://recon-analyzer:5000/api/Recon-Analyzer/scan",
+              json={"query": ip_or_domain}, timeout=60)
+
+# For email/phone/username OSINT (secondary use)
+requests.post("http://recon-analyzer:5000/api/Recon-Analyzer/footprint",
+              json={"query": email_or_username}, timeout=60)
 ```
-**Output contract (after adapter):** `{ "analyzer": "recon", "pass": N, "findings": [...], "risk_score": 0-10 }`
+
+**Input auto-detection logic in `/scan`:**
+- Valid IPv4 → runs IP-based checks directly
+- Valid domain → resolves to IP via DNS, then runs both IP + domain checks
+- Invalid format → returns `400`
+
+**Analysis modules used internally:**
+
+| Module | File | What it does |
+|---|---|---|
+| `ipapi` | `attack/ipapi.py` | IP geolocation (country, ISP, ASN, timezone) via `ip-api.com` batch API |
+| `talos` | `attack/talos.py` | Checks IP against Cisco Talos IP blocklist (local file, auto-downloads from snort.org) |
+| `tor` | `attack/tor.py` | Checks if IP is a known Tor exit node (local file, auto-downloads from torproject.org) |
+| `tranco` | `attack/tranco.py` | Domain ranking lookup via Tranco list API (domains only) |
+| `threatfox` | `attack/threatfox.py` | IOC lookup via ThreatFox/abuse.ch API (domains only) |
+| `xposedornot` | `osint/xposedornot.py` | Email breach check via XposedOrNot API (footprint only) |
+| `phone` | `osint/phone.py` | Phone number validation via NumVerify API (footprint only) |
+| `username` | `osint/username.py` | Username search across social platforms using multithreaded scraping via Sagemode (footprint only) |
+
+**`/scan` response shape:**
+```json
+{
+  "query": "8.8.8.8",
+  "ipapi":    { "ip_info": [...], "dns_info": {...} },
+  "talos":    { "blacklisted": false },
+  "tor":      { "is_tor_exit": false },
+  "tranco":   { "found": true, "rank": 42 },       // domains only
+  "threatfox": { "found": false }                   // domains only
+}
+```
+
+**`/footprint` response shape (email):**
+```json
+{
+  "query": "user@example.com",
+  "type": "email",
+  "email_scan": {
+    "exposed": true,
+    "breach_count": 3,
+    "breaches": [...],
+    "password_strength": [...],
+    "risk": {...}
+  }
+}
+```
+
+**Required environment variables:**
+
+| Variable | Used by | Required? |
+|---|---|---|
+| `NUMVERIFY_API_KEY` | `phone.py` — phone validation | Optional |
+| `THREATFOX_API_KEY` | `threatfox.py` — IOC lookup | Optional (works without it, lower rate limit) |
+| `ipAPI_KEY` | `ipapi.py` — IP geolocation | Optional (free tier works without it) |
+
+**Local media files (auto-downloaded if missing):**
+- `src/media/talos.txt` — Talos IP blocklist (downloaded from `snort.org/downloads/ip-block-list`)
+- `src/media/tor.txt` — Tor exit node IPs (downloaded from `check.torproject.org/exit-addresses`)
+
+**Classifier routing:** The orchestrator routes to `"recon"` when:
+- Input matches IPv4 regex `^\d{1,3}(\.\d{1,3}){3}$`
+- Input matches domain regex `^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$`
+
+**Output contract (after adapter):** `{ "analyzer": "recon", "pass": N, "input": str, "findings": [...], "risk_score": 0.0–10.0, "raw_output": str }`
+
+**Full integration details:** See [docs/Recon-Analyzer-Orchestration.md](docs/Recon-Analyzer-Orchestration.md) for the adapter pattern, compose config, and classifier rules.
 
 ---
 
@@ -230,9 +316,9 @@ backend/
     Dockerfile
     requirements.txt
     .env.example
-  malware-analyzer/                  ← Analyzer microservice (Docker service, port 5001)
+  Malware-Analyzer/                  ← REAL SOURCE (Docker service, host port 5001, container port 5000)
   steg-analyzer/                     ← Analyzer microservice (Docker service, port 5002)
-  recon-analyzer/                    ← Analyzer microservice (Docker service, port 5003)
+  Recon-Analyzer/                    ← REAL SOURCE (Docker service, host port 5003, container port 5000)
   url-analyzer/                      ← Analyzer microservice (Docker service, port 5004, internal)
   web-analyzer/                      ← Analyzer microservice (Docker service, port 5005)
   compose.yml                        ← Includes all 6 services
@@ -262,3 +348,5 @@ backend/
 - [docs/pipeline-flow.md](docs/pipeline-flow.md) — Pipeline loop logic
 - [docs/analyzers.md](docs/analyzers.md) — Per-analyzer capability spec
 - [docs/implementation-guide.md](docs/implementation-guide.md) — Hands-on implementation guide with code snippets
+- [docs/Malware-Analyzer-Orchestration.md](docs/Malware-Analyzer-Orchestration.md) — Malware Analyzer integration details (real endpoints, adapter, compose config)
+- [docs/Recon-Analyzer-Orchestration.md](docs/Recon-Analyzer-Orchestration.md) — Recon Analyzer integration details (real endpoints, adapter, compose config)
