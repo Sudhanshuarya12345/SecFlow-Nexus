@@ -41,6 +41,12 @@ log = logging.getLogger("secflow.threat_intel")
 _MODEL = "llama-3.3-70b-versatile"
 _MAX_DECOMPILE_LINES = 1000  # Ghidra output cap — user-specified
 
+# Hard cap on context chars sent to every Groq call.
+# llama-3.3-70b-versatile TPM limit is 12 000; at ~4 chars/token this
+# leaves ~3 000 tokens for the system prompt + response headroom.
+# 8 000 tokens × 4 chars ≈ 32 000 chars sent in the user message.
+_MAX_CONTEXT_CHARS = 16_000  # ~7-8k tokens (code/JSON tokenizes at ~2 chars/token)
+
 _client: OpenAI | None = None
 
 
@@ -138,6 +144,20 @@ def _build_context(raw_findings: list[dict]) -> str:
     return context
 
 
+def _trim_context(context: str) -> str:
+    """Truncate context to _MAX_CONTEXT_CHARS, keeping the last portion
+    (most recent pass findings are most relevant for rule generation)."""
+    if len(context) <= _MAX_CONTEXT_CHARS:
+        return context
+    kept = context[-_MAX_CONTEXT_CHARS:]
+    header = f"[... context trimmed to last {_MAX_CONTEXT_CHARS:,} chars ...]\n"
+    log.warning(
+        f"[threat_intel] Context trimmed from {len(context):,} "
+        f"to {_MAX_CONTEXT_CHARS:,} chars"
+    )
+    return header + kept
+
+
 # ── Call 1: Threat Summary ─────────────────────────────────────────────────────
 
 # Exact schema the model must return — shown verbatim in the prompt.
@@ -177,6 +197,7 @@ def _call_threat_summary(context: str) -> dict[str, Any]:
     - Map observed behaviors to MITRE ATT&CK TTPs
     - Provide a confidence-rated assessment with full reasoning
     """
+    context = _trim_context(context)
     prompt = (
         "You are a Tier-3 SOC analyst at a CSIRT. You have just completed a "
         "multi-stage automated threat analysis. Your job is to produce a structured "
@@ -236,6 +257,7 @@ def _call_yara_rules(context: str, threat_summary: dict) -> dict[str, Any]:
     align with the identified threat actor type, TTPs, and IOC inventory.
     Asks for 2–5 rules each targeting a distinct indicator or behavior.
     """
+    context = _trim_context(context)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     threat_ctx = json.dumps(threat_summary, indent=2)
 
@@ -310,6 +332,7 @@ def _call_sigma_rules(context: str, threat_summary: dict) -> dict[str, Any]:
     map to exactly the observed TTPs and can be imported into any SIGMA-compatible
     SIEM (Splunk, Elastic Security, Microsoft Sentinel, Chronicle, QRadar).
     """
+    context = _trim_context(context)
     today_sigma = datetime.now(timezone.utc).strftime("%Y/%m/%d")
     threat_ctx  = json.dumps(threat_summary, indent=2)
 
