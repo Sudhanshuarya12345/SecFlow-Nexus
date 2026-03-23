@@ -1,122 +1,452 @@
+<div align="center">
+
+<img src="https://img.shields.io/badge/SecFlow-Threat%20Analysis%20Pipeline-critical?style=for-the-badge&logo=shield&logoColor=white" alt="SecFlow">
+
 # SecFlow
 
-> **Fully Automated Threat Analysis Pipeline with PWNDoc Reporting**
+### Fully Automated Multi-Vector Threat Analysis Pipeline
 
-SecFlow is a multi-vector security analysis platform that accepts any input — file, URL, IP, domain, or image — routes it through specialized analyzers via an AI-driven orchestration loop, and produces a professional PWNDoc report (HTML, exportable to PDF) summarizing all findings, risk scores, and actionable recommendations.
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
+[![Flask](https://img.shields.io/badge/Flask-3.0-000000?style=flat-square&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
+[![Groq](https://img.shields.io/badge/AI-Groq%20%2B%20Qwen3-F55036?style=flat-square&logo=groq&logoColor=white)](https://groq.com)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-API%20v3-394EFF?style=flat-square&logo=virustotal&logoColor=white)](https://virustotal.com)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/aradhyacp/SecFlow/pulls)
 
-Built for security analysts and SOC teams who need a single platform instead of manually correlating results across multiple tools.
+**Drop in any file, URL, IP, domain, or image. SecFlow routes it through specialized analyzers, reasons about findings with AI, and produces a professional security report with YARA rules, SIGMA rules, and exportable PDF — automatically.**
+
+<img src="https://github.com/Sudhanshuarya12345/SecFlow-Nexus/blob/main/SecFlowSocialCard.jpg" alt="SecFlow Social Card">
+
+
+[Quick Start](#-quick-start) · [Architecture](#architecture) · [Report Output](#report-output) · [Docs](#-documentation)
+
+</div>
+
+---
+
+## What is SecFlow?
+
+SecFlow is an **open-source automated threat analysis pipeline** built for security analysts, SOC teams, and researchers. Instead of manually running disparate tools and correlating results, SecFlow:
+
+1. **Classifies** your input using deterministic rules (no AI on pass 1)
+2. **Routes** it through the right specialized analyzer via HTTP microservices
+3. **Reasons** about each pass's findings with Groq AI to decide the next step
+4. **Repeats** — following IOCs, downloading payloads, pivoting across analyzers
+5. **Reports** — generates a PWNDoc HTML report with YARA detection rules, SIGMA SIEM rules, MITRE ATT&CK mappings, and one-click PDF export
 
 ---
 
 ## Features
 
-- **Auto-Pipeline** — Drop in any input and let SecFlow handle routing, analysis, and reporting automatically
-- **Five Specialized Analyzers** — Malware, Steganography, Reconnaissance, Web Vulnerability, and Macro/Office
-- **AI-Driven Routing** — Groq `qwen/qwen3-32b` decides which analyzer runs next based on each pass's findings
-- **Smart First-Pass Classification** — Deterministic rules (`file` + `python-magic`) route on pass 1; AI only invoked when type is ambiguous
-- **Download-and-Analyze** — When AI has no next tool but passes remain, automatically downloads HTTP payloads found in analyzer output and routes them through appropriate analyzers
-- **Configurable Loop Depth** — Run the analysis loop for 3, 4, or 5 passes; exits early if AI signals no further signals
-- **Persistent Findings Store** — All output across every loop iteration is accumulated for the final report
-- **PWNDoc HTML Report** — AI-formatted, browser-printable report with one-click "Export PDF" button
-- **VirusTotal Integration** — Both Malware and Macro analyzers query VirusTotal API v3 for threat intelligence
-- **Standalone Analyzer Mode** — Use any single analyzer independently via its own HTTP API
+| Feature | Detail |
+|---|---|
+| **AI-Driven Routing** | Groq `qwen/qwen3-32b` decides the next analyzer after each pass — no manual configuration |
+| **5 Specialized Analyzers** | Malware · Steganography · Reconnaissance · Web Vulnerability · Macro/Office |
+| **Smart First-Pass** | `file` + `python-magic` deterministic rules on pass 1 — AI only called when type is ambiguous |
+| **Download-and-Analyze** | Follows IOCs — downloads payloads found in raw output and routes them through the right analyzer |
+| **YARA Rule Generation** | Auto-generates 2–5 deployable YARA rules per analysis, each citing the exact evidence that drove it |
+| **SIGMA Rule Generation** | Auto-generates 2–4 SIGMA rules for Splunk / Elastic / Sentinel — covering different log sources |
+| **MITRE ATT&CK Mapping** | Every finding mapped to real TTP IDs with tactic names |
+| **Dual Report Formats** | HTML report (print-to-PDF in browser) + structured JSON report (feed directly to AI for further analysis) |
+| **React Dashboard** | Full frontend UI — submit analyses, view live pipeline progress, browse results per analyzer |
+| **VirusTotal Integration** | Both Malware and Macro analyzers query 70+ AV engines via VT API v3 |
+| **Configurable Loop Depth** | 3, 4, or 5 passes — exits early if AI signals no further signals |
+| **Standalone Mode** | Every analyzer microservice exposes its own REST API — use them independently |
 
 ---
 
-## How It Works
+## Architecture
 
 ```
 User Input (file / URL / IP / domain / image)
         │
         ▼
-┌─────────────────────────────┐
-│   Input Classifier          │  file + python-magic → deterministic rule
-│   (Rule-based, no AI)       │  → if unknown type: Groq AI fallback
-└──────────────┬──────────────┘
-               │  first analyzer
-               ▼
-┌─────────────────────────────────────────────────────┐
-│   Analyzer Loop (N passes, N = 3 / 4 / 5)          │
-│                                                     │
-│  ┌─────────────────────────────────────────────┐   │
-│  │  Run Analyzer (HTTP → Docker microservice)  │   │
-│  │  Malware / Steg / Recon / Web / Macro       │   │
-│  └────────┬────────────────────────────────────┘   │
-│           │ findings + raw_output                   │
-│  ┌────────▼────────────────────────────────────┐   │
-│  │  AI Routing Engine  (Groq qwen/qwen3-32b)   │   │
-│  │  Extracts IOCs → asks AI → next_tool+target │   │
-│  └────────┬────────────────────────────────────┘   │
-│           │                                         │
-│     ┌─────┴────────────────┐                        │
-│   tool                   null (no next tool)        │
-│     │                       │                        │
-│     │               Try downloading HTTP payloads   │
-│     │               from raw_output URLs →          │
-│     │               run appropriate analyzer        │
-│     └─────────────── repeat ───────────────────────┘
-└──────────────┬──────────────────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│   Findings Store            │  All passes, all findings accumulated
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│   Report Generator          │  Groq summary → PWNDoc HTML
-│                             │  (one-click Export PDF in browser)
-└─────────────────────────────┘
+┌────────────────────────────────┐
+│   Input Classifier             │  file + python-magic → deterministic rule
+│   (Rule-based, pass 1 only)    │  unknown type? → Groq AI fallback
+└───────────────┬────────────────┘
+                │  first analyzer selected
+                ▼
+┌────────────────────────────────────────────────────────┐
+│              Analyzer Loop  (N = 3 / 4 / 5 passes)    │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Run Analyzer  (HTTP → Docker microservice)      │  │
+│  │  Malware · Steg · Recon · Web · Macro                 │  │
+│  └───────────────┬──────────────────────────────────┘  │
+│                  │ findings + raw_output                │
+│  ┌───────────────▼──────────────────────────────────┐  │
+│  │  AI Routing Engine  (Groq qwen/qwen3-32b)        │  │
+│  │  IOC extraction → next_tool + target             │  │
+│  └───────────────┬──────────────────────────────────┘  │
+│                  │                                      │
+│          ┌───────┴──────────────────┐                  │
+│       next tool                  null                   │
+│          │                          │                   │
+│          │               Download HTTP payloads         │
+│          │               from raw_output → re-analyze  │
+│          └──────────────── repeat ────────────────────┘│
+└─────────────────┬──────────────────────────────────────┘
+                  │
+                  ▼
+┌────────────────────────────────┐
+│  Findings Store                │  All passes · all findings accumulated
+└───────────────┬────────────────┘
+                │
+                ▼
+┌────────────────────────────────────────────┐
+│  Threat Intelligence Engine                │
+│  (Groq llama-3.3-70b-versatile)           │
+│  ├─ Threat Summary + MITRE ATT&CK TTPs    │
+│  ├─ YARA Detection Rules (2–5 rules)      │
+│  └─ SIGMA SIEM Rules (2–4 rules)          │
+└───────────────┬────────────────────────────┘
+                │
+                ▼
+┌────────────────────────────────┐
+│  PWNDoc HTML Report            │  Groq summary → browser-rendered HTML
+│                                │  One-click Export PDF button
+└────────────────────────────────┘
 ```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Docker + Docker Compose
+- API keys for Groq and VirusTotal (free tiers work)
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/aradhyacp/SecFlow.git
+cd SecFlow/backend
+```
+
+### 2. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your keys:
+
+```env
+# Required
+GROQ_API_KEY=your_groq_api_key_here
+VIRUSTOTAL_API_KEY=your_vt_api_key_here
+
+# Optional — unlock additional OSINT capabilities
+NUMVERIFY_API_KEY=your_numverify_key      # Phone number lookups
+THREATFOX_API_KEY=your_threatfox_key      # Higher ThreatFox rate limits
+ipAPI_KEY=your_ipapi_key                  # Higher ip-api.com rate limits
+
+# Pipeline control
+MAX_PASSES=3                              # 3 | 4 | 5
+```
+
+### 3. Start all services
+
+```bash
+docker compose up -d
+```
+
+This starts 6 containers:
+
+| Service | Port | Role |
+|---|---|---|
+| `orchestrator` | `5000` | Pipeline controller — main entry point |
+| `malware-analyzer` | `5001` | Ghidra decompilation + VirusTotal |
+| `steg-analyzer` | `5002` | binwalk + zsteg + steghide + ExifTool |
+| `recon-analyzer` | `5003` | ip-api + ThreatFox + OSINT |
+| `web-analyzer` | `5005` | HTTP vuln scanner + header audit |
+| `macro-analyzer` | `5006` | oletools (olevba) + VirusTotal |
+
+> **Note:** First start may take several minutes — the Malware Analyzer downloads Ghidra 12.0.1 (~500 MB) and requires a JDK 21 JVM.
+
+### 4. Run your first analysis
+
+**Analyze a file:**
+```bash
+curl -X POST http://localhost:5000/api/smart-analyze \
+  -F "file=@/path/to/suspicious.exe" \
+  -F "passes=3"
+```
+
+**Analyze a URL, IP, or domain:**
+```bash
+curl -X POST http://localhost:5000/api/smart-analyze \
+  -H "Content-Type: application/json" \
+  -d '{"target": "192.168.1.100", "passes": 3}'
+```
+
+**Response:**
+```json
+{
+  "job_id": "a1b2c3d4",
+  "findings": [...],
+  "report_paths": {
+    "json": "/api/report/a1b2c3d4/json",
+    "html": "/api/report/a1b2c3d4/html"
+  }
+}
+```
+
+Open `http://localhost:5000/api/report/<job_id>/html` in your browser to view the full report and export to PDF.
+
+### 5. Launch the frontend
+
+```bash
+cd ../frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` — the React dashboard lets you submit analyses, watch pipeline progress in real time, and browse results per analyzer.
 
 ---
 
 ## Analyzers
 
-| Analyzer | Port | Input Types | Tools / APIs |
-|---|---|---|---|
-| Malware | 5001 | EXE, DLL, ELF, binary | Ghidra decompilation, objdump, VirusTotal API v3 |
-| Steganography | 5002 | PNG, JPG, BMP, GIF, TIFF | LSB analysis, binwalk, zsteg, steghide, ExifTool |
-| Reconnaissance | 5003 | IPs, domains, emails, phones, usernames | ip-api, Talos, Tor check, ThreatFox, Tranco, XposedOrNot |
-| Web Vulnerability | 5005 | URLs | Security header audit, fingerprinting, vuln scanning |
-| Macro / Office | 5006 | DOC, DOCX, XLS, XLSX, XLSM, PPT, RTF | oletools (olevba), VirusTotal API v3 |
+### Malware Analyzer — Port 5001
+
+Analyzes executables and binaries with a three-layer approach:
+
+- **Ghidra 12.0.1** (via `pyghidra`) — full decompilation of all functions to C pseudo-code
+- **`objdump -d`** — assembly-level disassembly
+- **VirusTotal API v3** — 70+ AV engine detections, behavioral tags, file reputation
+
+**Supported:** `exe`, `dll`, `so`, `elf`, `bin`, `o`, `out` · Max 50 MB · Requires 4 GB RAM (Ghidra JVM)
 
 ---
 
-## Example Runs
+### Steganography Analyzer — Port 5002
 
-**Malicious Office document:**
+Detects hidden data embedded in images using multiple methods:
+
+- **binwalk** — detects and extracts embedded files at binary offsets
+- **foremost** — file carving from raw binary streams
+- **zsteg** — LSB steganography detection in PNG/BMP
+- **steghide** — passphrase-based steg detection in JPEG/BMP
+- **ExifTool** — metadata extraction and anomaly detection
+
+**Extracts embedded archives and queues them for re-analysis** in the next pipeline pass.
+
+**Supported:** PNG, JPG, BMP, GIF, TIFF, WebP
+
+---
+
+### Reconnaissance Analyzer — Port 5003
+
+Performs threat intelligence and OSINT on network identifiers:
+
+**Scan mode** (IP / domain):
+
+| Module | Source | What it checks |
+|---|---|---|
+| `ipapi` | ip-api.com | Country, ISP, ASN, geolocation |
+| `talos` | Cisco Talos blocklist | IP reputation / blacklist |
+| `tor` | Tor Project exit list | Tor exit node detection |
+| `tranco` | Tranco ranking list | Domain popularity rank |
+| `threatfox` | abuse.ch ThreatFox | Active IOC / malware association |
+
+**Footprint mode** (email / phone / username):
+- **Email** — XposedOrNot breach database (breach count, severity, password risk)
+- **Phone** — NumVerify carrier + country + line type validation
+- **Username** — Sagemode multithreaded profile discovery across social platforms
+
+---
+
+### Web Vulnerability Analyzer — Port 5005
+
+Audits URLs and web endpoints:
+
+- Security header analysis (CSP, HSTS, X-Frame-Options, etc.)
+- Technology fingerprinting (server, frameworks, CMS)
+- HTTP response analysis and redirect chain following
+- Basic vulnerability scanning for common misconfigurations
+
+---
+
+### Macro / Office Analyzer — Port 5006
+
+Dissects Office documents for malicious macros:
+
+- **oletools (olevba)** — extracts and decompiles VBA/XLM macros
+- **AutoExec detection** — flags macros that auto-run on open/close
+- **IOC extraction** — URLs, IPs, file paths embedded in macro code
+- **Obfuscation detection** — Base64, Chr() chains, hex encoding
+- **VirusTotal API v3** — file reputation cross-check
+
+**Supported:** `doc`, `docx`, `docm`, `xls`, `xlsx`, `xlsm`, `xlsb`, `ppt`, `pptx`, `pptm`, `rtf`
+
+---
+
+## Report Output
+
+Every pipeline run produces **two report formats** saved to `backend/reports/<job_id>/`:
+
+### HTML Report (`report.html`)
+
+Open in any browser. Click **Export PDF** to print — no server-side PDF rendering needed, no dependencies.
+
+Contains: executive summary · YARA rules · SIGMA rules · MITRE TTPs · per-pass evidence panels · VirusTotal engine badges.
+
+### JSON Report (`report.json`)
+
+Fully structured machine-readable output. Use this when you want to:
+- Feed findings directly into another AI model for deeper analysis
+- Ingest into a SIEM or ticketing system
+- Diff two reports programmatically
+- Build custom dashboards
+
+The JSON mirrors the HTML exactly — every finding, YARA rule, SIGMA rule, IOC, and TTP is present in a clean, typed schema.
+
+See [`examples/`](examples/) for sample input files and [`example_reports`](example_reports/) for real report outputs generated during development.
+
+---
+
+### Executive Summary
+AI-written narrative (Groq `qwen/qwen3-32b`) covering:
+- Identified threat name and actor type classification
+- Attack chain reconstruction (step-by-step)
+- Confidence rating and overall risk score
+
+### YARA Detection Rules
+**2–5 production-ready YARA rules** generated by `llama-3.3-70b-versatile`, each:
+- Named with `SecFlow_[ThreatCategory]_[IndicatorType]` convention
+- Containing valid YARA 4.x syntax — ready to import into any YARA-compatible scanner
+- Including a `reasoning` field citing the exact evidence from the analysis that informed the rule
+- Covering distinct aspects: file signatures, embedded strings, C2 indicators, packer signatures, memory patterns
+
+```yara
+rule SecFlow_Trojan_C2StringIndicator {
+  meta:
+    description = "Detects C2 callback string found in Ghidra decompilation"
+    author      = "SecFlow AI"
+    severity    = "high"
+  strings:
+    $c2 = "evil.sh/drop.exe"
+    $ua = "Mozilla/4.0 (compatible; MSIE 6.0)"
+  condition:
+    any of them
+}
 ```
-Input: invoice.xlsm
 
-Pass 1 — Rule: .xlsm → Macro Analyzer
-         → olevba: AutoExec + Suspicious macros, IOC: http://evil.sh/drop.exe
-         → VT: 12/70 engines flagged
+### SIGMA SIEM Rules
+**2–4 SIGMA rules** for immediate SIEM deployment, each:
+- Covering a **different log source** (process creation, network, DNS, file events, registry)
+- Including valid SIGMA syntax compatible with `sigma-cli` 0.x and pySigma
+- Mapping tags to real MITRE ATT&CK tactics and technique IDs
+- Importable into Splunk, Elastic Security, Microsoft Sentinel, Chronicle, QRadar
 
-Pass 2 — AI: URL found in IOCs → Web Analyzer
-         → http://evil.sh/drop.exe — endpoint alive, 302 redirect to CDN
-
-Pass 3 — AI: no further signals, but URL in raw_output
-         → Download payload: drop.exe → Malware Analyzer
-         → Ghidra decompile, 45/70 VT detections, Trojan.GenericKDZ
-
-Loop ends → PWNDoc HTML report generated ("Export PDF" in browser)
+```yaml
+title: Detect Suspicious AutoExec Macro Execution
+id: f2a3b1c4-...
+status: experimental
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'EXCEL.EXE'
+      - '/automation'
+  condition: selection
+level: high
+tags:
+  - attack.execution
+  - attack.t1137.001
 ```
 
-**Suspicious image:**
+### MITRE ATT&CK TTPs
+Every identified behavior mapped to real technique IDs with tactic names and reasoning.
+
+### Per-Pass Evidence
+Collapsible panels for each analyzer pass showing:
+- Ghidra decompilation output (dark code block, collapsible)
+- objdump disassembly (collapsible)
+- VirusTotal engine detections (color-coded severity badges)
+- Raw analyzer findings JSON
+
+### Export PDF
+One-click browser print dialog pre-configured for PDF export — no server-side PDF generation needed.
+
+---
+
+## Example Pipeline Runs
+
+Sample input files are in [`examples/`](examples/) — includes real malware samples (`RealMalware.exe`, `ColorBug.exe`, `EarlyEnd.exe`, `.out` ELF binaries) and a malicious Office document (`nuclear_motor_example.docm`). Corresponding report outputs are in [`backend/reports/`](backend/reports/).
+
+### Malicious Office Document
+
 ```
-Input: profile.png
+Input:  invoice.xlsm
+Passes: 3
 
-Pass 1 — Rule: image/png → Steg Analyzer
-         → binwalk: embedded ELF binary at offset 0x8200
+Pass 1 ─ Rule: .xlsm extension → Macro Analyzer
+          olevba: AutoExec macro found
+          IOC: http://evil.sh/drop.exe
+          VT: 12/70 engines flagged
 
-Pass 2 — AI: extracted binary → Malware Analyzer
-         → C2 callout to 192.168.1.100 found in Ghidra decompile
+Pass 2 ─ AI: URL found in IOCs → Web Analyzer
+          http://evil.sh/drop.exe — alive, 302 redirect to CDN
 
-Pass 3 — AI: IP found → Recon Analyzer
-         → Talos: blacklisted, Tor exit node
+Pass 3 ─ AI: no further tool, but HTTP URL in raw_output
+          Download: drop.exe → Malware Analyzer
+          Ghidra: C2 callback string, packed PE
+          VT: 45/70 detections — Trojan.GenericKDZ
 
-Loop ends → Report generated
+Report  ─ PWNDoc HTML generated
+          YARA: 4 rules (string, byte sig, packer, C2 domain)
+          SIGMA: 3 rules (process_creation, network, registry)
+          MITRE: T1566.001, T1059.005, T1071.001
+```
+
+### Suspicious Image with Embedded Payload
+
+```
+Input:  profile.png
+Passes: 3
+
+Pass 1 ─ Rule: image/png → Steg Analyzer
+          binwalk: embedded ELF binary at offset 0x8200
+          Archive extracted → queued for re-analysis
+
+Pass 2 ─ Queue: extracted ELF → Malware Analyzer
+          Ghidra: C2 callout to 192.168.1.100
+          objdump: packed UPX section
+
+Pass 3 ─ AI: IP found → Recon Analyzer
+          Talos: blacklisted
+          Tor: confirmed exit node
+          ThreatFox: associated with AsyncRAT
+
+Report  ─ Full chain documented
+          YARA: 3 rules (ELF magic, UPX sig, C2 string)
+          SIGMA: 2 rules (network_connection, dns_query)
+```
+
+### Suspicious Domain
+
+```
+Input:  malicious-domain.ru
+Passes: 3
+
+Pass 1 ─ Rule: domain regex → Recon Analyzer
+          ipapi: RU, ISP: HostMaster LLC
+          Talos: on blocklist
+          ThreatFox: linked to Raccoon Stealer, confidence 95
+
+Pass 2 ─ AI: ThreatFox hit → Web Analyzer
+          /login endpoint returns 200, harvesting form detected
+
+Pass 3 ─ AI: no futher signals — loop exits early
+
+Report  ─ Executive summary + TTPs + SIGMA network rules
 ```
 
 ---
@@ -124,84 +454,139 @@ Loop ends → Report generated
 ## Project Structure
 
 ```
-secflow/
+SecFlow/
 ├── backend/
-│   ├── orchestrator/       # Pipeline orchestrator (port 5000)
+│   ├── compose.yml                 # All 6 services on secflow-net
+│   ├── .env.example                # All required + optional API keys
+│   │
+│   ├── orchestrator/               # Pipeline controller (port 5000)
 │   │   ├── app/
-│   │   │   ├── routes.py           ← POST /api/smart-analyze
-│   │   │   ├── orchestrator.py     ← Pipeline loop + download-and-analyze
+│   │   │   ├── routes.py           # POST /api/smart-analyze
+│   │   │   ├── orchestrator.py     # Pipeline loop + download-and-analyze
 │   │   │   ├── classifier/
-│   │   │   │   ├── classifier.py   ← python-magic + file command
-│   │   │   │   └── rules.py        ← Deterministic routing rules
+│   │   │   │   ├── classifier.py   # file + python-magic type detection
+│   │   │   │   └── rules.py        # Deterministic routing rules
 │   │   │   ├── ai/
-│   │   │   │   ├── engine.py       ← Groq qwen/qwen3-32b wrapper
-│   │   │   │   └── keywords.txt    ← Fallback grep keyword list
-│   │   │   ├── adapters/           ← Translates analyzer responses
+│   │           ├── engine.py       # Groq qwen/qwen3-32b routing decisions
+│   │           ├── threat_intel.py # YARA rules + SIGMA rules + threat summary
+│   │   │   │   └── keywords.txt    # Grep fallback keyword list
+│   │   │   ├── adapters/           # Translate analyzer responses → contract
 │   │   │   │   ├── malware_adapter.py
 │   │   │   │   ├── steg_adapter.py
 │   │   │   │   ├── recon_adapter.py
 │   │   │   │   ├── web_adapter.py
 │   │   │   │   └── macro_adapter.py
 │   │   │   ├── store/
-│   │   │   │   └── findings_store.py
+│   │   │   │   └── findings_store.py   # Thread-safe findings accumulator
 │   │   │   └── reporter/
-│   │   │       └── report_generator.py  ← PWNDoc HTML + Export PDF
+│   │   │       └── report_generator.py # PWNDoc HTML + Export PDF
 │   │   ├── Dockerfile
 │   │   └── requirements.txt
-│   ├── Malware-Analyzer/   # Ghidra + objdump + VirusTotal (port 5001)
-│   ├── Steg-Analyzer/      # steghide + binwalk + zsteg (port 5002)
-│   ├── Recon-Analyzer/     # ip-api + ThreatFox + OSINT (port 5003)
-│   ├── Web-Analyzer/       # HTTP vuln scanner (port 5005)
-│   ├── macro-analyzer/     # oletools + VirusTotal (port 5006)
-│   └── compose.yml         # All 6 services on secflow-net
-├── frontend/           # UI (planned — later phase)
-├── docs/               # Architecture, pipeline flow, analyzer docs
-├── AGENTS.md           # Agent architecture and coding instructions
-└── Readme.md           # This file
+│   │
+│   ├── Malware-Analyzer/           # Ghidra + objdump + VirusTotal (port 5001)
+│   ├── Steg-Analyzer/              # binwalk + zsteg + steghide (port 5002)
+│   ├── Recon-Analyzer/             # ip-api + ThreatFox + OSINT (port 5003)
+│   ├── Web-Analyzer/               # HTTP vuln scanner (port 5005)
+│   └── macro-analyzer/             # oletools + VirusTotal (port 5006)
+│
+├── frontend/                       # React + Vite dashboard (port 5173)
+│   └── src/
+│       ├── pages/dashboard/        # Per-analyzer pages + smart pipeline UI
+│       ├── components/             # Reusable UI components
+│       └── pages/LandingPage.jsx   # Public landing page
+│
+├── examples/                       # Sample input files for testing
+│   ├── RealMalware.exe             # Real malware sample
+│   ├── ColorBug.exe / EarlyEnd.exe # PE test samples
+│   ├── sample.out / sample2.out    # ELF binaries
+│   └── nuclear_motor_example.docm  # Malicious Office document
+│
+├── docs/                           # Architecture + pipeline + analyzer docs
+├── AGENTS.md                       # Agent architecture + coding conventions
+└── Readme.md
 ```
 
 ---
 
-## Documentation
+## AI Models
 
-> Backend documentation is the source of truth for service APIs and developer workflows.
+SecFlow uses **Groq** for all AI inference — free tier, no credit card required.
 
-| Document | Description |
-|---|---|
-| [ProjectDetails.md](ProjectDetails.md) | Full project specification and design |
-| [AGENTS.md](AGENTS.md) | Agent architecture and AI coding instructions |
-| [docs/architecture.md](docs/architecture.md) | System component and data-flow architecture |
-| [docs/pipeline-flow.md](docs/pipeline-flow.md) | Detailed pipeline loop logic |
-| [docs/analyzers.md](docs/analyzers.md) | Per-analyzer capability and interface spec |
-| [docs/migration.md](docs/migration.md) | Integration guide for the analyzer microservices |
-| [backend/Readme.md](backend/Readme.md) | Backend setup and development guide |
-| [backend/Recon-Analyzer/README.md](backend/Recon-Analyzer/README.md) | Recon Analyzer service documentation |
-| [backend/Malware-Analyzer/README.md](backend/Malware-Analyzer/README.md) | Malware Analyzer service documentation |
-| [backend/Web-Analyzer/README.md](backend/Web-Analyzer/README.md) | Web Analyzer service overview |
-| [backend/Web-Analyzer/QUICKSTART.md](backend/Web-Analyzer/QUICKSTART.md) | Web Analyzer quick start |
-| [backend/Web-Analyzer/API_DOCUMENTATION.md](backend/Web-Analyzer/API_DOCUMENTATION.md) | Web Analyzer API reference |
-| [backend/Web-Analyzer/DEVELOPMENT.md](backend/Web-Analyzer/DEVELOPMENT.md) | Web Analyzer development notes |
-| [frontend/Readme.md](frontend/Readme.md) | Frontend setup and development guide |
+| Role | Model | Why |
+|---|---|---|
+| **Pipeline routing** | `qwen/qwen3-32b` | Reliable structured JSON output; `/no_think` mode skips chain-of-thought for fast routing decisions |
+| **Threat intelligence** | `llama-3.3-70b-versatile` | Stronger reasoning for YARA/SIGMA generation and MITRE TTP mapping |
+| **Report summary** | `qwen/qwen3-32b` | Executive summary + recommendations |
+
+SecFlow uses the **OpenAI-compatible API spec** via the standard `openai` Python SDK — no vendor-specific SDK required. This means you can swap in any OpenAI-compatible model provider (OpenAI, Groq, Together, Ollama, etc.) by changing just the `base_url` and model name:
+
+```python
+from openai import OpenAI
+
+# Groq (current — free tier)
+client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+
+# OpenAI (drop-in swap)
+client = OpenAI(api_key=OPENAI_API_KEY)  # base_url defaults to api.openai.com
+
+# Local Ollama (fully offline)
+client = OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
+```
+
+**Why Groq + free tier?** SecFlow was built to be accessible — no paid API required to run the full pipeline. Groq's free tier covers all routing and report generation with no cost. If you're running heavier workloads or want to sponsor the project, see the [GitHub Sponsors](https://github.com/sponsors/aradhyacp) page.
 
 ---
 
-## AI Model — Why Groq instead of Gemini
+## API Reference
 
-SecFlow originally used Google Gemini for the AI Decision Engine. It was migrated to **Groq + `qwen/qwen3-32b`** for the following reasons:
+All requests go to the orchestrator at `http://localhost:5000`.
 
-- **Speed** — Groq's LPU hardware delivers significantly faster inference than Gemini API round-trips, which matters when the AI is called on every pipeline pass.
-- **OpenAI-compatible API** — Groq exposes an OpenAI-compatible REST API, meaning the standard `openai` Python SDK works directly with `base_url="https://api.groq.com/openai/v1"`. No vendor-specific SDK required.
-- **Structured JSON reliability** — `qwen/qwen3-32b` reliably returns well-formed JSON even without function-calling schemas, which is how SecFlow uses it (prompt-level instruction to return `{"next_tool", "target", "reasoning"}`).
-- **`/no_think` mode** — Qwen3 supports a system message of `"/no_think"` that disables chain-of-thought reasoning, giving direct answers faster — ideal for routing decisions.
-- **Rate limits** — Groq's free tier is generous enough for development without running into quota errors.
+### `POST /api/smart-analyze`
 
-The report summary (executive summary section) is also generated by Groq `qwen/qwen3-32b`.
+Submit a file or target for analysis.
+
+**File input:**
+```bash
+curl -X POST http://localhost:5000/api/smart-analyze \
+  -F "file=@sample.exe" \
+  -F "passes=4"
+```
+
+**Target input (URL / IP / domain):**
+```bash
+curl -X POST http://localhost:5000/api/smart-analyze \
+  -H "Content-Type: application/json" \
+  -d '{"target": "https://suspicious-site.com", "passes": 5}'
+```
+
+### `GET /api/report/<job_id>/html`
+
+Returns the full PWNDoc HTML report — open in browser, click **Export PDF** to save.
+
+### `GET /api/report/<job_id>/json`
+
+Returns the raw findings JSON for programmatic consumption.
+
+### `GET /api/health`
+
+Health check — returns `{"status": "healthy"}`.
+
+---
+
+## Environment Variables
+
+| Variable | Service | Required | Description |
+|---|---|---|---|
+| `GROQ_API_KEY` | orchestrator | ✅ | AI routing + threat intel + report generation |
+| `VIRUSTOTAL_API_KEY` | malware, macro | ✅ | VirusTotal API v3 file/URL analysis |
+| `NUMVERIFY_API_KEY` | recon | Optional | Phone number validation (NumVerify) |
+| `THREATFOX_API_KEY` | recon | Optional | Higher rate limit on ThreatFox IOC queries |
+| `ipAPI_KEY` | recon | Optional | Higher rate limit on ip-api.com |
+| `MAX_PASSES` | orchestrator | Optional | Loop depth — `3` (default) / `4` / `5` |
 
 ---
 
 ## Status
-
-> Backend pipeline is fully operational. Frontend UI is planned for a later phase.
 
 | Component | Status |
 |---|---|
@@ -212,5 +597,59 @@ The report summary (executive summary section) is also generated by Groq `qwen/q
 | Web Vulnerability Analyzer | ✅ Complete |
 | Macro Analyzer (oletools + VirusTotal) | ✅ Complete |
 | Download-and-Analyze payload fallback | ✅ Complete |
-| PWNDoc HTML Report + Export PDF button | ✅ Complete |
-| Frontend UI | ⏳ Planned |
+| YARA Rule Auto-Generation | ✅ Complete |
+| SIGMA Rule Auto-Generation | ✅ Complete |
+| MITRE ATT&CK TTP Mapping | ✅ Complete |
+| HTML Report + JSON Report + Export PDF | ✅ Complete |
+| React Frontend Dashboard | ✅ Complete |
+
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Agent architecture, service contracts, and AI coding instructions |
+| [ProjectDetails.md](ProjectDetails.md) | Full project specification and design decisions |
+| [docs/architecture.md](docs/architecture.md) | System component and data-flow diagrams |
+| [docs/pipeline-flow.md](docs/pipeline-flow.md) | Detailed pipeline loop logic and decision tree |
+| [docs/analyzers.md](docs/analyzers.md) | Per-analyzer capability and interface spec |
+| [docs/migration.md](docs/migration.md) | Integration guide for the analyzer microservices |
+| [backend/Readme.md](backend/Readme.md) | Backend setup, development, and troubleshooting guide |
+
+---
+
+## Contributing
+
+Contributions are welcome. SecFlow is open source and actively maintained.
+
+1. Fork [aradhyacp/SecFlow](https://github.com/aradhyacp/SecFlow)
+2. Create a feature branch: `git checkout -b feat/your-feature`
+3. Make changes — see [AGENTS.md](AGENTS.md) for architecture conventions and service contracts
+4. Open a pull request
+
+**Good first issues:** New IOC extraction patterns, SIGMA rule improvements, additional OSINT modules, frontend analyzer pages, report export improvements.
+
+If SecFlow is useful to your work or research, consider [sponsoring the project](https://github.com/sponsors/aradhyacp) — it helps keep the free-tier infrastructure and development going.
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+
+**Built for security analysts who need answers, not more tools to juggle.**
+
+If SecFlow helps you, give it a star — it helps others discover the project.
+
+[github.com/aradhyacp/SecFlow](https://github.com/aradhyacp/SecFlow)
+
+---
+
+`#cybersecurity` `#threatintelligence` `#malwareanalysis` `#yara` `#sigma` `#soc` `#dfir` `#infosec` `#osint` `#reverseengineering` `#steganography` `#virustotal` `#ghidra` `#docker` `#python` `#openSource` `#automation` `#mitre` `#attackframework` `#secops` `#blueTeam` `#incidentResponse` `#siem` `#edr` `#ioc` `#pwndoc` `#groq` `#llm` `#aiSecurity`
+
+</div>
