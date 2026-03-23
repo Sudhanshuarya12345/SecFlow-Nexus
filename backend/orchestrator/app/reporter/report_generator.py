@@ -1350,9 +1350,6 @@ def _render_html(
         yara = threat_intel.get("yara") or {}
         sig  = threat_intel.get("sigma") or {}
 
-        n_yara  = yara.get("total_rules", len(yara.get("rules", [])))
-        n_sigma = sig.get("total_rules", len(sig.get("rules", [])))
-
         # — Threat summary block — top of report, inside summary section
         ts_top_section = (
                 f'<section>'
@@ -1376,7 +1373,7 @@ def _render_html(
             f'</div>'
             f'{_render_yara_section(yara)}'
             f'</section>'
-        ) if n_yara > 0 else ""
+        )
 
         sigma_section = (
             f'<section>'
@@ -1388,7 +1385,7 @@ def _render_html(
             f'</div>'
             f'{_render_sigma_section(sig)}'
             f'</section>'
-        ) if n_sigma > 0 else ""
+        )
 
         yara_sig_section = yara_section + sigma_section
 
