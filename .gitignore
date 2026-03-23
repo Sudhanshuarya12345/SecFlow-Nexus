@@ -34,6 +34,9 @@ wheels/
 .coverage
 htmlcov/
 .pytest_cache/
+examples/
+*/examples/
+*/examples/*
 
 # Environments
 .env
