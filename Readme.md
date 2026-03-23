@@ -16,7 +16,7 @@
 
 **Drop in any file, URL, IP, domain, or image. SecFlow routes it through specialized analyzers, reasons about findings with AI, and produces a professional security report with YARA rules, SIGMA rules, and exportable PDF — automatically.**
 
-<img src="https://github.com/aradhyacp/SecFlow/blob/main/SecFlowSocialCard.jpg" alt="SecFlow Social Card">
+<img src="https://github.com/Sudhanshuarya12345/SecFlow-Nexus/blob/main/SecFlowSocialCard.jpg" alt="SecFlow Social Card">
 
 
 [Quick Start](#-quick-start) · [Architecture](#architecture) · [Report Output](#report-output) · [Docs](#-documentation)
